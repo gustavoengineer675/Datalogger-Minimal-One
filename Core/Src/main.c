@@ -18,18 +18,30 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "fatfs.h"
 #include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "usbd_cdc_if.h"
 #include <stdio.h>
-
+#include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+#include "semphr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
+typedef struct{
+	uin8_t speed,
+	uin8_t tension,
+	uin8_t temperature,
+}can_id_t;
 
 /* USER CODE END PTD */
 
@@ -51,6 +63,13 @@ SD_HandleTypeDef hsd2;
 
 UART_HandleTypeDef huart1;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
 
 FDCAN_FilterTypeDef sFilterConfig;
@@ -67,11 +86,14 @@ uint8_t               RxData_loopback[8];
 
 int16_t              imu[3];
 
-char name_files[50];
-char files[] = "ARQUIVO.txt";
-uint8_t count_files = 1;
+SD_HandleTypeDef hsd1;
 
-uint16_t id;
+uint32_t TotalSize, FreeSpace;
+QueueHandle_t queue_sd = NULL;
+
+can_id_t can_ids;
+
+char TxBuffer[250];
 
 /* USER CODE END PV */
 
@@ -82,6 +104,11 @@ static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_FDCAN2_Init(void);
 static void MX_SDMMC2_SD_Init(void);
+<<<<<<< Updated upstream
+=======
+void StartDefaultTask(void *argument);
+
+>>>>>>> Stashed changes
 /* USER CODE BEGIN PFP */
 
 int fputc(int ch, FILE *f)
@@ -96,39 +123,189 @@ int fputc(int ch, FILE *f)
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-//void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  //UNUSED(hfdcan);
-//  //UNUSED(RxFifo0ITs);
-//
-//
-//	HAL_UART_Transmit(&huart1, "fala", 5, HAL_MAX_DELAY);
-//	char call[] = "Mensagem recebida, callback acionado! \n";
-//	HAL_UART_Transmit(&huart1, (uint8_t*)call, strlen(call), HAL_MAX_DELAY);
-//	if(HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK){
-//
-//
-//		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-//
-//		id = RxHeader.Identifier;
-//
-//		//Organiza_Dados(id);
-//
-//		imu[0] = (int16_t)(RxData[1] << 8 | RxData[0]); // X Conversão dos dados que chegam,
-//		imu[1] = (int16_t)(RxData[3] << 8 | RxData[2]); // Y
-//		imu[2] = (int16_t)(RxData[5] << 8 | RxData[4]); // Z
-//
-//		char buff[30];
-//		snprintf(buff, sizeof(buff),"X: %d   Y: %d   Z: %d\n\r", imu[0], imu[1], imu[2] );
-//		HAL_UART_Transmit(&huart1, (uint8_t*)buff, strlen(buff), HAL_MAX_DELAY);
-////		printf("X: %d   Y: %d   Z: %d\n\r", imu[0], imu[1], imu[2]);
-//	}
-//	else{
-//		char calling[] = "Falha no Recebimento CAN";
-//		HAL_UART_Transmit(&huart1, (uint8_t*)calling, strlen(calling), HAL_MAX_DELAY);
-//	}
-//}
+void init_sd_card(){
+	//code
+	FATFS FatFs;
+	  FIL Fil;
+	  FRESULT FR_Status;
+	  FATFS *FS_Ptr;
+	  UINT RWC, WWC; // Read/Write Word Counter
+	  DWORD FreeClusters;
+	  uint32_t TotalSize, FreeSpace;
+	  char RW_Buffer[200];
+
+	    //------------------[ Mount The SD Card ]--------------------
+	    FR_Status = f_mount(&FatFs, SDPath, 1);
+	    if (FR_Status != FR_OK)
+	    {
+	      sprintf(TxBuffer, "Error! While Mounting SD Card, Error Code: (%i)\r\n", FR_Status);
+	      USB_CDC_Print(TxBuffer);
+	      break;
+	    }
+	    sprintf(TxBuffer, "SD Card Mounted Successfully! \r\n\n");
+	    USB_CDC_Print(TxBuffer);
+	    //------------------[ Get & Print The SD Card Size & Free Space ]--------------------
+	    f_getfree("", &FreeClusters, &FS_Ptr);
+	    TotalSize = (uint32_t)((FS_Ptr->n_fatent - 2) * FS_Ptr->csize * 0.5);
+	    FreeSpace = (uint32_t)(FreeClusters * FS_Ptr->csize * 0.5);
+	    sprintf(TxBuffer, "Total SD Card Size: %lu Bytes\r\n", TotalSize);
+	    USB_CDC_Print(TxBuffer);
+	    sprintf(TxBuffer, "Free SD Card Space: %lu Bytes\r\n\n", FreeSpace);
+	    USB_CDC_Print(TxBuffer);
+
+}
+
+void write_sd_card_task(void *pvParameters){
+	while(1){
+		char buffer[256] = {0};
+		xQueueReceive(queue_sd, buffer, portMAX_DELAY);
+
+	    FR_Status = f_lseek(&Fil, f_size(&Fil)); // Move The File Pointer To The EOF (End-Of-File)
+	    if(FR_Status != FR_OK)
+	    {
+	      sprintf(TxBuffer, "Error! While Opening (MyTextFile.txt) File For Update.. \r\n");
+	      USB_CDC_Print(TxBuffer);
+	      break;
+	    }
+	    for(int i = 0; i < TOTAL_NUMBER_OF_CAN_IDS; i++){
+	    	if(i == buffer.id){
+	    		// pensar uma forma de atualizar o can id global
+	    		f_write(&Fil, buffer.data, strlen(buffer), &WWC);
+	    		f_puts(",", &Fil);
+	    	}
+	    	else{ //basicamente vai repetir a informação da linha de cima mas com time_stamp diferente, isso evitar ter 0s a menos que a propria variavel tenha mandado essa informação
+	    		// escreve o can_id.speed
+	    		// escreve ;
+	    		// escreve o can_id.temperature
+	    		// escreve ;
+	    		// ...
+	    	}
+	    }
+
+	}
+}
+
+void can_callback(){
+	//can_info_buff vai ser um struct que contem id, data;
+	xQueueSendToBack(queue_sd, can_info_buff, 0);
+	//code
+}
+
+static void USB_CDC_Print(char* TxStr)
+{
+    while(CDC_Transmit_FS((uint8_t*)TxStr, strlen(TxStr)) == USBD_BUSY);
+}
+
+static void SDIO_SDCard_Test(void)
+{
+  FATFS FatFs;
+  FIL Fil;
+  FRESULT FR_Status;
+  FATFS *FS_Ptr;
+  UINT RWC, WWC; // Read/Write Word Counter
+  DWORD FreeClusters;
+  uint32_t TotalSize, FreeSpace;
+  char RW_Buffer[200];
+  do
+  {
+    //------------------[ Mount The SD Card ]--------------------
+    FR_Status = f_mount(&FatFs, SDPath, 1);
+    if (FR_Status != FR_OK)
+    {
+      sprintf(TxBuffer, "Error! While Mounting SD Card, Error Code: (%i)\r\n", FR_Status);
+      USB_CDC_Print(TxBuffer);
+      break;
+    }
+    sprintf(TxBuffer, "SD Card Mounted Successfully! \r\n\n");
+    USB_CDC_Print(TxBuffer);
+    //------------------[ Get & Print The SD Card Size & Free Space ]--------------------
+    f_getfree("", &FreeClusters, &FS_Ptr);
+    TotalSize = (uint32_t)((FS_Ptr->n_fatent - 2) * FS_Ptr->csize * 0.5);
+    FreeSpace = (uint32_t)(FreeClusters * FS_Ptr->csize * 0.5);
+    sprintf(TxBuffer, "Total SD Card Size: %lu Bytes\r\n", TotalSize);
+    USB_CDC_Print(TxBuffer);
+    sprintf(TxBuffer, "Free SD Card Space: %lu Bytes\r\n\n", FreeSpace);
+    USB_CDC_Print(TxBuffer);
+    //------------------[ Open A Text File For Write & Write Data ]--------------------
+    //Open the file
+    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_WRITE | FA_READ | FA_CREATE_ALWAYS);
+    if(FR_Status != FR_OK)
+    {
+      sprintf(TxBuffer, "Error! While Creating/Opening A New Text File, Error Code: (%i)\r\n", FR_Status);
+      USB_CDC_Print(TxBuffer);
+      break;
+    }
+    sprintf(TxBuffer, "Text File Created & Opened! Writing Data To The Text File..\r\n\n");
+    USB_CDC_Print(TxBuffer);
+    // (1) Write Data To The Text File [ Using f_puts() Function ]
+    f_puts("Hello! From STM32 To SD Card Over SDMMC, Using f_puts()\n", &Fil);
+    // (2) Write Data To The Text File [ Using f_write() Function ]
+    strcpy(RW_Buffer, "Hello! From STM32 To SD Card Over SDMMC, Using f_write()\r\n");
+    f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
+    // Close The File
+    f_close(&Fil);
+    //------------------[ Open A Text File For Read & Read Its Data ]--------------------
+    // Open The File
+    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_READ);
+    if(FR_Status != FR_OK)
+    {
+      sprintf(TxBuffer, "Error! While Opening (MyTextFile.txt) File For Read.. \r\n");
+      USB_CDC_Print(TxBuffer);
+      break;
+    }
+    // (1) Read The Text File's Data [ Using f_gets() Function ]
+    f_gets(RW_Buffer, sizeof(RW_Buffer), &Fil);
+    sprintf(TxBuffer, "Data Read From (MyTextFile.txt) Using f_gets():%s", RW_Buffer);
+    USB_CDC_Print(TxBuffer);
+    // (2) Read The Text File's Data [ Using f_read() Function ]
+    f_read(&Fil, RW_Buffer, f_size(&Fil), &RWC);
+    sprintf(TxBuffer, "Data Read From (MyTextFile.txt) Using f_read():%s", RW_Buffer);
+    USB_CDC_Print(TxBuffer);
+    // Close The File
+    f_close(&Fil);
+    sprintf(TxBuffer, "File Closed! \r\n\n");
+    USB_CDC_Print(TxBuffer);
+    //------------------[ Open An Existing Text File, Update Its Content, Read It Back ]--------------------
+    // (1) Open The Existing File For Write (Update)
+    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_OPEN_EXISTING | FA_WRITE);
+    FR_Status = f_lseek(&Fil, f_size(&Fil)); // Move The File Pointer To The EOF (End-Of-File)
+    if(FR_Status != FR_OK)
+    {
+      sprintf(TxBuffer, "Error! While Opening (MyTextFile.txt) File For Update.. \r\n");
+      USB_CDC_Print(TxBuffer);
+      break;
+    }
+    // (2) Write New Line of Text Data To The File
+    FR_Status = f_puts("This New Line Was Added During File Update!\r\n", &Fil);
+    f_close(&Fil);
+    memset(RW_Buffer,'\0',sizeof(RW_Buffer)); // Clear The Buffer
+    // (3) Read The Contents of The Text File After The Update
+    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_READ); // Open The File For Read
+    f_read(&Fil, RW_Buffer, f_size(&Fil), &RWC);
+    sprintf(TxBuffer, "Data Read From (MyTextFile.txt) After Update:\r\n%s", RW_Buffer);
+    USB_CDC_Print(TxBuffer);
+    f_close(&Fil);
+    //------------------[ Delete The Text File ]--------------------
+    // Delete The File
+    /*
+    FR_Status = f_unlink(MyTextFile.txt);
+    if (FR_Status != FR_OK){
+        sprintf(TxBuffer, "Error! While Deleting The (MyTextFile.txt) File.. \r\n");
+        USC_CDC_Print(TxBuffer);
+    }
+    */
+  } while(0);
+  //------------------[ Test Complete! Unmount The SD Card ]--------------------
+  FR_Status = f_mount(NULL, "", 0);
+  if (FR_Status != FR_OK)
+  {
+      sprintf(TxBuffer, "\r\nError! While Un-mounting SD Card, Error Code: (%i)\r\n", FR_Status);
+      USB_CDC_Print(TxBuffer);
+  } else{
+      sprintf(TxBuffer, "\r\nSD Card Un-mounted Successfully! \r\n");
+      USB_CDC_Print(TxBuffer);
+  }
+}
 
 /* USER CODE END 0 */
 
@@ -167,60 +344,54 @@ int main(void)
   MX_USART1_UART_Init();
   MX_FDCAN2_Init();
   MX_FATFS_Init();
+<<<<<<< Updated upstream
   MX_USB_DEVICE_Init();
+=======
+>>>>>>> Stashed changes
   MX_SDMMC2_SD_Init();
   /* USER CODE BEGIN 2 */
 
-  if(HAL_FDCAN_ActivateNotification(&hfdcan2, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK){
-	  Error_Handler();
-	  HAL_UART_Transmit(&huart1, "fail to activate notification\r\n", 32, HAL_MAX_DELAY);
-  }
-  else{
-  	  HAL_UART_Transmit(&huart1, "ok\r\n", 5, HAL_MAX_DELAY);
-    }
-
-  if(HAL_FDCAN_Start(&hfdcan2)){
-	  Error_Handler();
-	  HAL_UART_Transmit(&huart1, "fail to activate start\r\n", 25, HAL_MAX_DELAY);
-  }else{
-	  HAL_UART_Transmit(&huart1, "ok\r\n", 5, HAL_MAX_DELAY);
-  }
-
-
-//  FATFS meuFATFS;
-//  FIL meuArquivo;
-//  UINT testeByte;
-
-//  printf("Iniciando gravação no Cartão SD\n\r");
-//
-//  if(f_mount(&meuFATFS, SDPath,1) == FR_OK)
-//  {
-//	  HAL_GPIO_TogglePin(GPIOA, Debug_SD_Pin);
-//
-//	  f_open(&meuArquivo, files ,FA_WRITE | FA_CREATE_ALWAYS); // modificação "ARQUIVO.txt" -> name_files
-//	  char meusdados[] = "Escreveu Linha 1\r\nEscreveu Linha 2\0";
-//	  f_write(&meuArquivo,meusdados,sizeof(meusdados),&testeByte);
-//	  f_close(&meuArquivo);
-//
-//	  f_mkdir("PASTA");
-//	  f_open(&meuArquivo,"/PASTA/FILE.txt", FA_WRITE | FA_CREATE_ALWAYS);
-//	  char dadosfile[] = "Teste Curso STM32 Pasta\0";
-//	  f_write(&meuArquivo,dadosfile,sizeof(dadosfile),&testeByte);
-//	  f_close(&meuArquivo);
-//
-//	  HAL_Delay(500);
-//	  HAL_GPIO_TogglePin(GPIOA, Debug_SD_Pin);
-//
-//	  printf("Gravação Concluída!\r\n");
-//
-//  } else {
-//
-//	  printf("Cartão não detectado\n\r");
-//
-//  }
+  HAL_Delay(5000); // This delay is not mandatory but it gives me some time to connect the USB cable and open the terminal
+  SDIO_SDCard_Test();
 
 
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -279,13 +450,13 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 9;
+  RCC_OscInitStruct.PLL.PLLN = 24;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 3;
+  RCC_OscInitStruct.PLL.PLLQ = 8;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_3;
-  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOMEDIUM;
-  RCC_OscInitStruct.PLL.PLLFRACN = 3072;
+  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
+  RCC_OscInitStruct.PLL.PLLFRACN = 0;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -546,6 +717,26 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE END 4 */
 
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
  /* MPU Configuration */
 
 void MPU_Config(void)
@@ -573,6 +764,28 @@ void MPU_Config(void)
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM6 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
 }
 
 /**

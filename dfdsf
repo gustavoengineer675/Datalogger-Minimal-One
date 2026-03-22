@@ -1,0 +1,26 @@
+[1mdiff --git a/Core/Src/main.c b/Core/Src/main.c[m
+[1mindex 5d850db..e2c0eab 100644[m
+[1m--- a/Core/Src/main.c[m
+[1m+++ b/Core/Src/main.c[m
+[36m@@ -203,21 +203,6 @@[m [mint main(void)[m
+ //	  f_close(&meuArquivo);[m
+ //[m
+ //	  f_mkdir("PASTA");[m
+[31m-//	  f_open(&meuArquivo,"/PASTA/FILE.txt", FA_WRITE | FA_CREATE_ALWAYS);[m
+[31m-//	  char dadosfile[] = "Teste Curso STM32 Pasta\0";[m
+[31m-//	  f_write(&meuArquivo,dadosfile,sizeof(dadosfile),&testeByte);[m
+[31m-//	  f_close(&meuArquivo);[m
+[31m-//[m
+[31m-//	  HAL_Delay(500);[m
+[31m-//	  HAL_GPIO_TogglePin(GPIOA, Debug_SD_Pin);[m
+[31m-//[m
+[31m-//	  printf("Gravação Concluída!\r\n");[m
+[31m-//[m
+[31m-//  } else {[m
+[31m-//[m
+[31m-//	  printf("Cartão não detectado\n\r");[m
+[31m-//[m
+[31m-//  }[m
+ [m
+ [m
+   /* USER CODE END 2 */[m
