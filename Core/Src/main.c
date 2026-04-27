@@ -1,47 +1,40 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * Copyright (c) 2025 STMicroelectronics.
+ * All rights reserved.
+ *
+ * This software is licensed under terms that can be found in the LICENSE file
+ * in the root directory of this software component.
+ * If no LICENSE file comes with this software, it is provided AS-IS.
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
 #include "fatfs.h"
-#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include "usbd_cdc_if.h"
 #include <stdio.h>
 #include <string.h>
-#include "FreeRTOS.h"
-#include "task.h"
-#include "queue.h"
-#include "semphr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 
-typedef struct{
-	uin8_t speed,
-	uin8_t tension,
-	uin8_t temperature,
-}can_id_t;
+typedef struct {
+	uint8_t speed;
+	uint8_t tension;
+	uint8_t temperature;
+} can_id_t;
 
 /* USER CODE END PTD */
 
@@ -57,39 +50,22 @@ typedef struct{
 
 /* Private variables ---------------------------------------------------------*/
 
-FDCAN_HandleTypeDef hfdcan2;
-
 SD_HandleTypeDef hsd2;
 
 UART_HandleTypeDef huart1;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
 /* USER CODE BEGIN PV */
-
-FDCAN_FilterTypeDef sFilterConfig;
-
-FDCAN_RxHeaderTypeDef RxHeader;
-FDCAN_TxHeaderTypeDef TxHeader;
 
 HAL_StatusTypeDef status;
 
-uint8_t               TxData[8];
-uint8_t               RxData[8];
-uint8_t               TxData_loopback[8];
-uint8_t               RxData_loopback[8];
+uint8_t TxData[8];
+uint8_t RxData[8];
+uint8_t TxData_loopback[8];
+uint8_t RxData_loopback[8];
 
-int16_t              imu[3];
-
-SD_HandleTypeDef hsd1;
+int16_t imu[3];
 
 uint32_t TotalSize, FreeSpace;
-QueueHandle_t queue_sd = NULL;
 
 can_id_t can_ids;
 
@@ -102,209 +78,153 @@ void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_FDCAN2_Init(void);
 static void MX_SDMMC2_SD_Init(void);
-<<<<<<< Updated upstream
-=======
-void StartDefaultTask(void *argument);
-
->>>>>>> Stashed changes
 /* USER CODE BEGIN PFP */
 
-int fputc(int ch, FILE *f)
-{
-    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
-    return ch;
+int fputc(int ch, FILE *f) {
+	HAL_UART_Transmit(&huart1, (uint8_t*) &ch, 1, HAL_MAX_DELAY);
+	return ch;
 }
-
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void init_sd_card(){
-	//code
-	FATFS FatFs;
-	  FIL Fil;
-	  FRESULT FR_Status;
-	  FATFS *FS_Ptr;
-	  UINT RWC, WWC; // Read/Write Word Counter
-	  DWORD FreeClusters;
-	  uint32_t TotalSize, FreeSpace;
-	  char RW_Buffer[200];
+void delay_ms(uint32_t ms) {
+	uint32_t start = SysTick->VAL;
+	uint32_t ticks = (SystemCoreClock / 1000) * ms;
+	uint32_t elapsed = 0;
 
-	    //------------------[ Mount The SD Card ]--------------------
-	    FR_Status = f_mount(&FatFs, SDPath, 1);
-	    if (FR_Status != FR_OK)
-	    {
-	      sprintf(TxBuffer, "Error! While Mounting SD Card, Error Code: (%i)\r\n", FR_Status);
-	      USB_CDC_Print(TxBuffer);
-	      break;
-	    }
-	    sprintf(TxBuffer, "SD Card Mounted Successfully! \r\n\n");
-	    USB_CDC_Print(TxBuffer);
-	    //------------------[ Get & Print The SD Card Size & Free Space ]--------------------
-	    f_getfree("", &FreeClusters, &FS_Ptr);
-	    TotalSize = (uint32_t)((FS_Ptr->n_fatent - 2) * FS_Ptr->csize * 0.5);
-	    FreeSpace = (uint32_t)(FreeClusters * FS_Ptr->csize * 0.5);
-	    sprintf(TxBuffer, "Total SD Card Size: %lu Bytes\r\n", TotalSize);
-	    USB_CDC_Print(TxBuffer);
-	    sprintf(TxBuffer, "Free SD Card Space: %lu Bytes\r\n\n", FreeSpace);
-	    USB_CDC_Print(TxBuffer);
+	while (elapsed < ticks) {
+		uint32_t current = SysTick->VAL;
+		if (current <= start)
+			elapsed += (start - current);
+		else
+			elapsed += (start + (SysTick->LOAD - current));
 
-}
-
-void write_sd_card_task(void *pvParameters){
-	while(1){
-		char buffer[256] = {0};
-		xQueueReceive(queue_sd, buffer, portMAX_DELAY);
-
-	    FR_Status = f_lseek(&Fil, f_size(&Fil)); // Move The File Pointer To The EOF (End-Of-File)
-	    if(FR_Status != FR_OK)
-	    {
-	      sprintf(TxBuffer, "Error! While Opening (MyTextFile.txt) File For Update.. \r\n");
-	      USB_CDC_Print(TxBuffer);
-	      break;
-	    }
-	    for(int i = 0; i < TOTAL_NUMBER_OF_CAN_IDS; i++){
-	    	if(i == buffer.id){
-	    		// pensar uma forma de atualizar o can id global
-	    		f_write(&Fil, buffer.data, strlen(buffer), &WWC);
-	    		f_puts(",", &Fil);
-	    	}
-	    	else{ //basicamente vai repetir a informação da linha de cima mas com time_stamp diferente, isso evitar ter 0s a menos que a propria variavel tenha mandado essa informação
-	    		// escreve o can_id.speed
-	    		// escreve ;
-	    		// escreve o can_id.temperature
-	    		// escreve ;
-	    		// ...
-	    	}
-	    }
-
+		start = current;
 	}
 }
 
-void can_callback(){
-	//can_info_buff vai ser um struct que contem id, data;
-	xQueueSendToBack(queue_sd, can_info_buff, 0);
-	//code
-}
-
-static void USB_CDC_Print(char* TxStr)
-{
-    while(CDC_Transmit_FS((uint8_t*)TxStr, strlen(TxStr)) == USBD_BUSY);
-}
-
-static void SDIO_SDCard_Test(void)
-{
-  FATFS FatFs;
-  FIL Fil;
-  FRESULT FR_Status;
-  FATFS *FS_Ptr;
-  UINT RWC, WWC; // Read/Write Word Counter
-  DWORD FreeClusters;
-  uint32_t TotalSize, FreeSpace;
-  char RW_Buffer[200];
-  do
-  {
-    //------------------[ Mount The SD Card ]--------------------
-    FR_Status = f_mount(&FatFs, SDPath, 1);
-    if (FR_Status != FR_OK)
-    {
-      sprintf(TxBuffer, "Error! While Mounting SD Card, Error Code: (%i)\r\n", FR_Status);
-      USB_CDC_Print(TxBuffer);
-      break;
-    }
-    sprintf(TxBuffer, "SD Card Mounted Successfully! \r\n\n");
-    USB_CDC_Print(TxBuffer);
-    //------------------[ Get & Print The SD Card Size & Free Space ]--------------------
-    f_getfree("", &FreeClusters, &FS_Ptr);
-    TotalSize = (uint32_t)((FS_Ptr->n_fatent - 2) * FS_Ptr->csize * 0.5);
-    FreeSpace = (uint32_t)(FreeClusters * FS_Ptr->csize * 0.5);
-    sprintf(TxBuffer, "Total SD Card Size: %lu Bytes\r\n", TotalSize);
-    USB_CDC_Print(TxBuffer);
-    sprintf(TxBuffer, "Free SD Card Space: %lu Bytes\r\n\n", FreeSpace);
-    USB_CDC_Print(TxBuffer);
-    //------------------[ Open A Text File For Write & Write Data ]--------------------
-    //Open the file
-    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_WRITE | FA_READ | FA_CREATE_ALWAYS);
-    if(FR_Status != FR_OK)
-    {
-      sprintf(TxBuffer, "Error! While Creating/Opening A New Text File, Error Code: (%i)\r\n", FR_Status);
-      USB_CDC_Print(TxBuffer);
-      break;
-    }
-    sprintf(TxBuffer, "Text File Created & Opened! Writing Data To The Text File..\r\n\n");
-    USB_CDC_Print(TxBuffer);
-    // (1) Write Data To The Text File [ Using f_puts() Function ]
-    f_puts("Hello! From STM32 To SD Card Over SDMMC, Using f_puts()\n", &Fil);
-    // (2) Write Data To The Text File [ Using f_write() Function ]
-    strcpy(RW_Buffer, "Hello! From STM32 To SD Card Over SDMMC, Using f_write()\r\n");
-    f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
-    // Close The File
-    f_close(&Fil);
-    //------------------[ Open A Text File For Read & Read Its Data ]--------------------
-    // Open The File
-    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_READ);
-    if(FR_Status != FR_OK)
-    {
-      sprintf(TxBuffer, "Error! While Opening (MyTextFile.txt) File For Read.. \r\n");
-      USB_CDC_Print(TxBuffer);
-      break;
-    }
-    // (1) Read The Text File's Data [ Using f_gets() Function ]
-    f_gets(RW_Buffer, sizeof(RW_Buffer), &Fil);
-    sprintf(TxBuffer, "Data Read From (MyTextFile.txt) Using f_gets():%s", RW_Buffer);
-    USB_CDC_Print(TxBuffer);
-    // (2) Read The Text File's Data [ Using f_read() Function ]
-    f_read(&Fil, RW_Buffer, f_size(&Fil), &RWC);
-    sprintf(TxBuffer, "Data Read From (MyTextFile.txt) Using f_read():%s", RW_Buffer);
-    USB_CDC_Print(TxBuffer);
-    // Close The File
-    f_close(&Fil);
-    sprintf(TxBuffer, "File Closed! \r\n\n");
-    USB_CDC_Print(TxBuffer);
-    //------------------[ Open An Existing Text File, Update Its Content, Read It Back ]--------------------
-    // (1) Open The Existing File For Write (Update)
-    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_OPEN_EXISTING | FA_WRITE);
-    FR_Status = f_lseek(&Fil, f_size(&Fil)); // Move The File Pointer To The EOF (End-Of-File)
-    if(FR_Status != FR_OK)
-    {
-      sprintf(TxBuffer, "Error! While Opening (MyTextFile.txt) File For Update.. \r\n");
-      USB_CDC_Print(TxBuffer);
-      break;
-    }
-    // (2) Write New Line of Text Data To The File
-    FR_Status = f_puts("This New Line Was Added During File Update!\r\n", &Fil);
-    f_close(&Fil);
-    memset(RW_Buffer,'\0',sizeof(RW_Buffer)); // Clear The Buffer
-    // (3) Read The Contents of The Text File After The Update
-    FR_Status = f_open(&Fil, "MyTextFile.txt", FA_READ); // Open The File For Read
-    f_read(&Fil, RW_Buffer, f_size(&Fil), &RWC);
-    sprintf(TxBuffer, "Data Read From (MyTextFile.txt) After Update:\r\n%s", RW_Buffer);
-    USB_CDC_Print(TxBuffer);
-    f_close(&Fil);
-    //------------------[ Delete The Text File ]--------------------
-    // Delete The File
-    /*
-    FR_Status = f_unlink(MyTextFile.txt);
-    if (FR_Status != FR_OK){
-        sprintf(TxBuffer, "Error! While Deleting The (MyTextFile.txt) File.. \r\n");
-        USC_CDC_Print(TxBuffer);
-    }
-    */
-  } while(0);
-  //------------------[ Test Complete! Unmount The SD Card ]--------------------
-  FR_Status = f_mount(NULL, "", 0);
-  if (FR_Status != FR_OK)
-  {
-      sprintf(TxBuffer, "\r\nError! While Un-mounting SD Card, Error Code: (%i)\r\n", FR_Status);
-      USB_CDC_Print(TxBuffer);
-  } else{
-      sprintf(TxBuffer, "\r\nSD Card Un-mounted Successfully! \r\n");
-      USB_CDC_Print(TxBuffer);
-  }
+static void SDIO_SDCard_Test(void) {
+	FATFS FatFs;
+	FIL Fil;
+	FRESULT FR_Status;
+	FATFS *FS_Ptr;
+	UINT RWC, WWC; // Read/Write Word Counter
+	DWORD FreeClusters;
+	uint32_t TotalSize, FreeSpace;
+	char RW_Buffer[200];
+	do {
+		//------------------[ Mount The SD Card ]--------------------
+		FR_Status = f_mount(&FatFs, SDPath, 1);
+		if (FR_Status != FR_OK) {
+			sprintf(TxBuffer,
+					"Error! While Mounting SD Card, Error Code: (%i)\r\n",
+					FR_Status);
+			//print tx
+			break;
+		}
+		sprintf(TxBuffer, "SD Card Mounted Successfully! \r\n\n");
+		//print tx
+		//------------------[ Get & Print The SD Card Size & Free Space ]--------------------
+		f_getfree("", &FreeClusters, &FS_Ptr);
+		TotalSize = (uint32_t) ((FS_Ptr->n_fatent - 2) * FS_Ptr->csize * 0.5);
+		FreeSpace = (uint32_t) (FreeClusters * FS_Ptr->csize * 0.5);
+		sprintf(TxBuffer, "Total SD Card Size: %lu Bytes\r\n", TotalSize);
+		//print tx
+		sprintf(TxBuffer, "Free SD Card Space: %lu Bytes\r\n\n", FreeSpace);
+		//print tx
+		//------------------[ Open A Text File For Write & Write Data ]--------------------
+		//Open the file
+		FR_Status = f_open(&Fil, "MyTextFile.txt",
+		FA_WRITE | FA_READ | FA_CREATE_ALWAYS);
+		if (FR_Status != FR_OK) {
+			sprintf(TxBuffer,
+					"Error! While Creating/Opening A New Text File, Error Code: (%i)\r\n",
+					FR_Status);
+			//print tx
+			break;
+		}
+		sprintf(TxBuffer,
+				"Text File Created & Opened! Writing Data To The Text File..\r\n\n");
+		//print tx
+		// (1) Write Data To The Text File [ Using f_puts() Function ]
+		f_puts("Hello! From STM32 To SD Card Over SDMMC, Using f_puts()\n",
+				&Fil);
+		// (2) Write Data To The Text File [ Using f_write() Function ]
+		strcpy(RW_Buffer,
+				"Hello! From STM32 To SD Card Over SDMMC, Using f_write()\r\n");
+		f_write(&Fil, RW_Buffer, strlen(RW_Buffer), &WWC);
+		// Close The File
+		f_close(&Fil);
+		//------------------[ Open A Text File For Read & Read Its Data ]--------------------
+		// Open The File
+		FR_Status = f_open(&Fil, "MyTextFile.txt", FA_READ);
+		if (FR_Status != FR_OK) {
+			sprintf(TxBuffer,
+					"Error! While Opening (MyTextFile.txt) File For Read.. \r\n");
+			//printf tx buffer
+			break;
+		}
+		// (1) Read The Text File's Data [ Using f_gets() Function ]
+		f_gets(RW_Buffer, sizeof(RW_Buffer), &Fil);
+		sprintf(TxBuffer, "Data Read From (MyTextFile.txt) Using f_gets():%s",
+				RW_Buffer);
+		//printf tx buffer
+		// (2) Read The Text File's Data [ Using f_read() Function ]
+		f_read(&Fil, RW_Buffer, f_size(&Fil), &RWC);
+		sprintf(TxBuffer, "Data Read From (MyTextFile.txt) Using f_read():%s",
+				RW_Buffer);
+		//printf tx buffer
+		// Close The File
+		f_close(&Fil);
+		sprintf(TxBuffer, "File Closed! \r\n\n");
+		//printf tx buffer
+		//------------------[ Open An Existing Text File, Update Its Content, Read It Back ]--------------------
+		// (1) Open The Existing File For Write (Update)
+		FR_Status = f_open(&Fil, "MyTextFile.txt", FA_OPEN_EXISTING | FA_WRITE);
+		FR_Status = f_lseek(&Fil, f_size(&Fil)); // Move The File Pointer To The EOF (End-Of-File)
+		if (FR_Status != FR_OK) {
+			sprintf(TxBuffer,
+					"Error! While Opening (MyTextFile.txt) File For Update.. \r\n");
+			//printf tx buffer
+			break;
+		}
+		// (2) Write New Line of Text Data To The File
+		FR_Status = f_puts("This New Line Was Added During File Update!\r\n",
+				&Fil);
+		f_close(&Fil);
+		memset(RW_Buffer, '\0', sizeof(RW_Buffer)); // Clear The Buffer
+		// (3) Read The Contents of The Text File After The Update
+		FR_Status = f_open(&Fil, "MyTextFile.txt", FA_READ); // Open The File For Read
+		f_read(&Fil, RW_Buffer, f_size(&Fil), &RWC);
+		sprintf(TxBuffer, "Data Read From (MyTextFile.txt) After Update:\r\n%s",
+				RW_Buffer);
+		//printf tx buffer
+		f_close(&Fil);
+		//------------------[ Delete The Text File ]--------------------
+		// Delete The File
+		/*
+		 FR_Status = f_unlink(MyTextFile.txt);
+		 if (FR_Status != FR_OK){
+		 sprintf(TxBuffer, "Error! While Deleting The (MyTextFile.txt) File.. \r\n");
+		 USC_CDC_Print(TxBuffer);
+		 }
+		 */
+	} while (0);
+	//------------------[ Test Complete! Unmount The SD Card ]--------------------
+	FR_Status = f_mount(NULL, "", 0);
+	if (FR_Status != FR_OK) {
+		sprintf(TxBuffer,
+				"\r\nError! While Un-mounting SD Card, Error Code: (%i)\r\n",
+				FR_Status);
+		//printf tx buffer
+	} else {
+		sprintf(TxBuffer, "\r\nSD Card Un-mounted Successfully! \r\n");
+		//printf tx buffer
+	}
 }
 
 /* USER CODE END 0 */
@@ -342,82 +262,24 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
-  MX_FDCAN2_Init();
   MX_FATFS_Init();
-<<<<<<< Updated upstream
-  MX_USB_DEVICE_Init();
-=======
->>>>>>> Stashed changes
   MX_SDMMC2_SD_Init();
   /* USER CODE BEGIN 2 */
 
-  HAL_Delay(5000); // This delay is not mandatory but it gives me some time to connect the USB cable and open the terminal
-  SDIO_SDCard_Test();
-
-
+	// Test The SDIO SD Card Interface
+	HAL_Delay(1000); // This delay is not mandatory but it gives me some time to connect the USB cable and open the terminal
+	SDIO_SDCard_Test();
   /* USER CODE END 2 */
-
-  /* Init scheduler */
-  osKernelInitialize();
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
-
-  /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
-
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
-
-  /* Start scheduler */
-  osKernelStart();
-
-  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	while (1) {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	     TxData_loopback[0] = 1;
-	     TxData_loopback[1] = 2;
-	     TxData_loopback[2] = 3;
-	     TxData_loopback[3] = 4;
-	     TxData_loopback[4] = 5;
-	     TxData_loopback[5] = 6;
-
-//
-//	     HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &TxHeader, TxData_loopback);
-
-		  HAL_UART_Transmit(&huart1, "while\n",  7, HAL_MAX_DELAY);
-	     for(int i = 0; i < 10000000; i++);
-	//if (HAL_GPIO_ReadPin(GPIOA, botao_Pin) == 0){
-	//	sprintf(name_files, "%d%s", count_files, files); // renomeia o arquivo caso o botao seja precionado,
-		                                                 //assim a variável name_files irá forçar o sd a criar um novo arquivo.
-
-	//}
-  }
+//		SDIO_SDCard_Test();
+		delay_ms(10000);
+	}
   /* USER CODE END 3 */
 }
 
@@ -443,10 +305,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 4;
@@ -482,97 +343,6 @@ void SystemClock_Config(void)
 }
 
 /**
-  * @brief FDCAN2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_FDCAN2_Init(void)
-{
-
-  /* USER CODE BEGIN FDCAN2_Init 0 */
-
-  /* USER CODE END FDCAN2_Init 0 */
-
-  /* USER CODE BEGIN FDCAN2_Init 1 */
-
-  /* USER CODE END FDCAN2_Init 1 */
-  hfdcan2.Instance = FDCAN2;
-  hfdcan2.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
-  hfdcan2.Init.Mode = FDCAN_MODE_NORMAL;
-  hfdcan2.Init.AutoRetransmission = ENABLE;
-  hfdcan2.Init.TransmitPause = DISABLE;
-  hfdcan2.Init.ProtocolException = DISABLE;
-  hfdcan2.Init.NominalPrescaler = 5;
-  hfdcan2.Init.NominalSyncJumpWidth = 1;
-  hfdcan2.Init.NominalTimeSeg1 = 13;
-  hfdcan2.Init.NominalTimeSeg2 = 6;
-  hfdcan2.Init.DataPrescaler = 1;
-  hfdcan2.Init.DataSyncJumpWidth = 1;
-  hfdcan2.Init.DataTimeSeg1 = 1;
-  hfdcan2.Init.DataTimeSeg2 = 1;
-  hfdcan2.Init.MessageRAMOffset = 0;
-  hfdcan2.Init.StdFiltersNbr = 1;
-  hfdcan2.Init.ExtFiltersNbr = 0;
-  hfdcan2.Init.RxFifo0ElmtsNbr = 8;
-  hfdcan2.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
-  hfdcan2.Init.RxFifo1ElmtsNbr = 8;
-  hfdcan2.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
-  hfdcan2.Init.RxBuffersNbr = 0;
-  hfdcan2.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
-  hfdcan2.Init.TxEventsNbr = 0;
-  hfdcan2.Init.TxBuffersNbr = 0;
-  hfdcan2.Init.TxFifoQueueElmtsNbr = 8;
-  hfdcan2.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
-  hfdcan2.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
-  if (HAL_FDCAN_Init(&hfdcan2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN FDCAN2_Init 2 */
-
-  sFilterConfig.IdType = FDCAN_STANDARD_ID;
-  sFilterConfig.FilterIndex = 0;
-  sFilterConfig.FilterType = FDCAN_FILTER_MASK;
-  sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-  sFilterConfig.FilterID1 = 0x000;
-  sFilterConfig.FilterID2 = 0x000;
-
-  HAL_FDCAN_ConfigFilter(&hfdcan2, &sFilterConfig);
-
-  HAL_FDCAN_ConfigGlobalFilter(
-      &hfdcan2,
-      FDCAN_ACCEPT_IN_RX_FIFO0,
-      FDCAN_ACCEPT_IN_RX_FIFO0,
-      FDCAN_FILTER_REMOTE,
-      FDCAN_FILTER_REMOTE
-  );
-
-  TxHeader.Identifier = 0x7FF;
-  TxHeader.IdType = FDCAN_STANDARD_ID;
-  TxHeader.TxFrameType = FDCAN_DATA_FRAME;
-  TxHeader.DataLength = FDCAN_DLC_BYTES_8;
-  TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-  TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
-  TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
-  TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-  TxHeader.MessageMarker = 0;
-
-
-  void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
-  {
-      if (RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE)
-      {
-          if(HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK)
-          {
-              HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-          }
-      }
-  }
-  /* USER CODE END FDCAN2_Init 2 */
-
-}
-
-/**
   * @brief SDMMC2 Initialization Function
   * @param None
   * @retval None
@@ -592,7 +362,7 @@ static void MX_SDMMC2_SD_Init(void)
   hsd2.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
   hsd2.Init.BusWide = SDMMC_BUS_WIDE_4B;
   hsd2.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-  hsd2.Init.ClockDiv = 0;
+  hsd2.Init.ClockDiv = 8;
   if (HAL_SD_Init(&hsd2) != HAL_OK)
   {
     Error_Handler();
@@ -703,12 +473,12 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF9_FDCAN2;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+	GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
+	GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	GPIO_InitStruct.Alternate = GPIO_AF9_FDCAN2;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
@@ -716,26 +486,6 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
-
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
-  * @brief  Function implementing the defaultTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
-{
-  /* init code for USB_DEVICE */
-  MX_USB_DEVICE_Init();
-  /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END 5 */
-}
 
  /* MPU Configuration */
 
@@ -795,11 +545,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
+	/* User can add his own implementation to report the HAL error return state */
+	__disable_irq();
+	while (1) {
+	}
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
