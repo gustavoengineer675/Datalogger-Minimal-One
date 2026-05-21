@@ -24,6 +24,15 @@
 /* USER CODE BEGIN Includes */
 
 #include <stdio.h>
+#include <string.h>
+
+#define CAN_QUEUE_SIZE 32
+
+typedef struct {
+	uint32_t id;
+	uint8_t data[8];
+	uint8_t dlc;
+} CAN_MSG_t;
 
 /* USER CODE END Includes */
 
@@ -44,8 +53,14 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+FDCAN_HandleTypeDef hfdcan2;
+
 SD_HandleTypeDef hsd2;
 
+TIM_HandleTypeDef htim2;
+DMA_HandleTypeDef hdma_tim2_ch3;
+
+UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
@@ -54,10 +69,20 @@ UART_HandleTypeDef huart1;
 //
 //FDCAN_RxHeaderTypeDef RxHeader;
 //FDCAN_TxHeaderTypeDef TxHeader;
+FDCAN_RxHeaderTypeDef RxHeader;
+
+FDCAN_FilterTypeDef sFilterConfig;
+
+volatile CAN_MSG_t canQueue[CAN_QUEUE_SIZE];
+
+volatile uint32_t canHead = 0;
+volatile uint32_t canTail = 0;
+
+uint8_t RxData[8];
+
 HAL_StatusTypeDef status;
 
 uint8_t TxData[8];
-uint8_t RxData[8];
 uint8_t TxData_loopback[8];
 uint8_t RxData_loopback[8];
 
@@ -65,14 +90,21 @@ int16_t imu[3];
 
 uint16_t id;
 
+uint16_t dados[74];
+uint16_t c1, c2, c3;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_SDMMC2_SD_Init(void);
+static void MX_FDCAN2_Init(void);
+static void MX_UART4_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 int fputc(int ch, FILE *f) {
@@ -80,10 +112,80 @@ int fputc(int ch, FILE *f) {
 	return ch;
 }
 
+int _write(int file, char *ptr, int len) {
+	HAL_UART_Transmit(&huart1, (uint8_t*) ptr, len, HAL_MAX_DELAY);
+	return len;
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
+	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
+		if (HAL_FDCAN_GetRxMessage(hfdcan,
+		FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
+			uint32_t next = (canHead + 1) % CAN_QUEUE_SIZE;
+
+			if (next != canTail) {
+				canQueue[canHead].id = RxHeader.Identifier;
+
+				canQueue[canHead].dlc = RxHeader.DataLength >> 16;
+
+				memcpy((void*) canQueue[canHead].data, RxData, 8);
+
+				canHead = next;
+			}
+		}
+	}
+}
+
+void led_rgb(uint16_t red, uint16_t green, uint16_t blue) {
+	extern uint16_t dados[74];
+
+	uint16_t greenbuffer[8];
+	uint16_t redbuffer[8];
+	uint16_t bluebuffer[8];
+
+	uint16_t bit0 = 12;
+	uint16_t bit1 = 22;
+
+	/* GREEN */
+	for (int i = 7; i >= 0; i--) {
+		greenbuffer[i] = green % 2;
+		green = green / 2;
+
+		if (greenbuffer[i] == 1) {
+			dados[i] = bit1;
+		} else {
+			dados[i] = bit0;
+		}
+	}
+
+	/* RED */
+	for (int i = 7; i >= 0; i--) {
+		redbuffer[i] = red % 2;
+		red = red / 2;
+
+		if (redbuffer[i] == 1) {
+			dados[i + 8] = bit1;
+		} else {
+			dados[i + 8] = bit0;
+		}
+	}
+
+	/* BLUE */
+	for (int i = 7; i >= 0; i--) {
+		bluebuffer[i] = blue % 2;
+		blue = blue / 2;
+
+		if (bluebuffer[i] == 1) {
+			dados[i + 16] = bit1;
+		} else {
+			dados[i + 16] = bit0;
+		}
+	}
+}
 
 //void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 //{
@@ -151,20 +253,30 @@ int main(void) {
 
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
+	MX_DMA_Init();
 	MX_USART1_UART_Init();
 	MX_FATFS_Init();
 	MX_SDMMC2_SD_Init();
+	MX_FDCAN2_Init();
+	MX_UART4_Init();
+	MX_TIM2_Init();
 	/* USER CODE BEGIN 2 */
 
-	HAL_Delay(2000);
+	HAL_NVIC_SetPriority(FDCAN2_IT0_IRQn, 6, 0);
+	HAL_NVIC_EnableIRQ(FDCAN2_IT0_IRQn);
+	HAL_NVIC_SetPriority(SDMMC2_IRQn, 5, 0);
+
 	FATFS meuFATFS;
 	FIL meuArquivo;
 	UINT testeByte;
 
+	HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dados, 74);
+
 	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
 	if (res == FR_OK) {
+
 		f_open(&meuArquivo, "Arquivo.txt", FA_WRITE | FA_CREATE_ALWAYS);
-		char meusdados[] = "Escrevi escrevi kdfkdkfd vamooooo\0";
+		char meusdados[] = "tudo vai dar certom\0";
 		f_write(&meuArquivo, meusdados, sizeof(meusdados), &testeByte);
 		f_close(&meuArquivo);
 	} else {
@@ -226,7 +338,25 @@ int main(void) {
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
-//	     TxData_loopback[0] = 1;
+
+		if (canTail != canHead) {
+			CAN_MSG_t msg = canQueue[canTail];
+
+			canTail = (canTail + 1) % CAN_QUEUE_SIZE;
+
+			printf("ID: 0x%03lX DLC: %d DATA: ", msg.id, msg.dlc);
+
+			for (int i = 0; i < msg.dlc; i++) {
+				printf("%02X ", msg.data[i]);
+			}
+
+			printf("\r\n");
+		}
+
+		led_rgb(0, 0, 0);
+		HAL_Delay(1000);
+		led_rgb(255, 0, 0);
+		//	     TxData_loopback[0] = 1;
 //	     TxData_loopback[1] = 2;
 //	     TxData_loopback[2] = 3;
 //	     TxData_loopback[3] = 4;
@@ -291,16 +421,82 @@ void SystemClock_Config(void) {
 			| RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_D3PCLK1
 			| RCC_CLOCKTYPE_D1PCLK1;
 	RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-	RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV4;
+	RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
 	RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV1;
 	RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV1;
-	RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV1;
-	RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
+	RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
+	RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV4;
 	RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV1;
 
-	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK) {
+	if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) {
 		Error_Handler();
 	}
+}
+
+/**
+ * @brief FDCAN2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_FDCAN2_Init(void) {
+
+	/* USER CODE BEGIN FDCAN2_Init 0 */
+
+	/* USER CODE END FDCAN2_Init 0 */
+
+	/* USER CODE BEGIN FDCAN2_Init 1 */
+
+	/* USER CODE END FDCAN2_Init 1 */
+	hfdcan2.Instance = FDCAN2;
+	hfdcan2.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
+	hfdcan2.Init.Mode = FDCAN_MODE_NORMAL;
+	hfdcan2.Init.AutoRetransmission = ENABLE;
+	hfdcan2.Init.TransmitPause = DISABLE;
+	hfdcan2.Init.ProtocolException = DISABLE;
+	hfdcan2.Init.NominalPrescaler = 2;
+	hfdcan2.Init.NominalSyncJumpWidth = 1;
+	hfdcan2.Init.NominalTimeSeg1 = 13;
+	hfdcan2.Init.NominalTimeSeg2 = 2;
+	hfdcan2.Init.DataPrescaler = 1;
+	hfdcan2.Init.DataSyncJumpWidth = 1;
+	hfdcan2.Init.DataTimeSeg1 = 1;
+	hfdcan2.Init.DataTimeSeg2 = 1;
+	hfdcan2.Init.MessageRAMOffset = 0;
+	hfdcan2.Init.StdFiltersNbr = 1;
+	hfdcan2.Init.ExtFiltersNbr = 0;
+	hfdcan2.Init.RxFifo0ElmtsNbr = 0;
+	hfdcan2.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
+	hfdcan2.Init.RxFifo1ElmtsNbr = 0;
+	hfdcan2.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
+	hfdcan2.Init.RxBuffersNbr = 0;
+	hfdcan2.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
+	hfdcan2.Init.TxEventsNbr = 0;
+	hfdcan2.Init.TxBuffersNbr = 0;
+	hfdcan2.Init.TxFifoQueueElmtsNbr = 0;
+	hfdcan2.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
+	hfdcan2.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
+	if (HAL_FDCAN_Init(&hfdcan2) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN FDCAN2_Init 2 */
+	sFilterConfig.IdType = FDCAN_STANDARD_ID;
+	sFilterConfig.FilterIndex = 0;
+
+	sFilterConfig.FilterType = FDCAN_FILTER_MASK;
+	sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+
+	sFilterConfig.FilterID1 = 0x000;
+	sFilterConfig.FilterID2 = 0x000;
+
+	HAL_FDCAN_ConfigFilter(&hfdcan2, &sFilterConfig);
+
+	HAL_FDCAN_Start(&hfdcan2);
+
+	HAL_FDCAN_ActivateNotification(&hfdcan2,
+	FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
+
+	/* USER CODE END FDCAN2_Init 2 */
+
 }
 
 /**
@@ -329,6 +525,106 @@ static void MX_SDMMC2_SD_Init(void) {
 	/* USER CODE BEGIN SDMMC2_Init 2 */
 
 	/* USER CODE END SDMMC2_Init 2 */
+
+}
+
+/**
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM2_Init(void) {
+
+	/* USER CODE BEGIN TIM2_Init 0 */
+
+	/* USER CODE END TIM2_Init 0 */
+
+	TIM_ClockConfigTypeDef sClockSourceConfig = { 0 };
+	TIM_MasterConfigTypeDef sMasterConfig = { 0 };
+	TIM_OC_InitTypeDef sConfigOC = { 0 };
+
+	/* USER CODE BEGIN TIM2_Init 1 */
+
+	/* USER CODE END TIM2_Init 1 */
+	htim2.Instance = TIM2;
+	htim2.Init.Prescaler = 0;
+	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim2.Init.Period = 40 - 1;
+	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	if (HAL_TIM_Base_Init(&htim2) != HAL_OK) {
+		Error_Handler();
+	}
+	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+	if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) {
+		Error_Handler();
+	}
+	sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig)
+			!= HAL_OK) {
+		Error_Handler();
+	}
+	sConfigOC.OCMode = TIM_OCMODE_PWM1;
+	sConfigOC.Pulse = 0;
+	sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+	sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+	if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3)
+			!= HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN TIM2_Init 2 */
+
+	/* USER CODE END TIM2_Init 2 */
+	HAL_TIM_MspPostInit(&htim2);
+
+}
+
+/**
+ * @brief UART4 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_UART4_Init(void) {
+
+	/* USER CODE BEGIN UART4_Init 0 */
+
+	/* USER CODE END UART4_Init 0 */
+
+	/* USER CODE BEGIN UART4_Init 1 */
+
+	/* USER CODE END UART4_Init 1 */
+	huart4.Instance = UART4;
+	huart4.Init.BaudRate = 115200;
+	huart4.Init.WordLength = UART_WORDLENGTH_8B;
+	huart4.Init.StopBits = UART_STOPBITS_1;
+	huart4.Init.Parity = UART_PARITY_NONE;
+	huart4.Init.Mode = UART_MODE_TX_RX;
+	huart4.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	huart4.Init.OverSampling = UART_OVERSAMPLING_16;
+	huart4.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+	huart4.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+	huart4.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+	if (HAL_UART_Init(&huart4) != HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_UARTEx_SetTxFifoThreshold(&huart4, UART_TXFIFO_THRESHOLD_1_8)
+			!= HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_UARTEx_SetRxFifoThreshold(&huart4, UART_RXFIFO_THRESHOLD_1_8)
+			!= HAL_OK) {
+		Error_Handler();
+	}
+	if (HAL_UARTEx_DisableFifoMode(&huart4) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN UART4_Init 2 */
+
+	/* USER CODE END UART4_Init 2 */
 
 }
 
@@ -378,6 +674,21 @@ static void MX_USART1_UART_Init(void) {
 }
 
 /**
+ * Enable DMA controller clock
+ */
+static void MX_DMA_Init(void) {
+
+	/* DMA controller clock enable */
+	__HAL_RCC_DMA1_CLK_ENABLE();
+
+	/* DMA interrupt init */
+	/* DMA1_Stream0_IRQn interrupt configuration */
+	HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
+
+}
+
+/**
  * @brief GPIO Initialization Function
  * @param None
  * @retval None
@@ -407,12 +718,6 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-	/*Configure GPIO pin : PA2 */
-	GPIO_InitStruct.Pin = GPIO_PIN_2;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
 	/*Configure GPIO pin : Debug_SD_Pin */
 	GPIO_InitStruct.Pin = Debug_SD_Pin;
