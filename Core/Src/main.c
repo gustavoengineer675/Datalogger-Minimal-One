@@ -121,6 +121,13 @@ int _write(int file, char *ptr, int len) {
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+volatile uint8_t pwmBusy = 0;
+
+void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim) {
+	HAL_TIM_PWM_Stop_DMA(htim, TIM_CHANNEL_3);
+	pwmBusy = 0;
+}
+
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
 	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
 		if (HAL_FDCAN_GetRxMessage(hfdcan,
@@ -138,6 +145,16 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 			}
 		}
 	}
+}
+
+void ws2812_show(void) {
+	while (pwmBusy)
+		;
+
+	pwmBusy = 1;
+
+	HAL_TIM_PWM_Start_DMA(&htim2,
+	TIM_CHANNEL_3, (uint32_t*) dados, 74);
 }
 
 void led_rgb(uint16_t red, uint16_t green, uint16_t blue) {
@@ -185,6 +202,23 @@ void led_rgb(uint16_t red, uint16_t green, uint16_t blue) {
 			dados[i + 16] = bit0;
 		}
 	}
+
+	for (int i = 24; i < 74; i++) {
+		dados[i] = 0;
+	}
+
+	ws2812_show();
+}
+
+void blink_rgb(void) {
+	led_rgb(0, 0, 0);
+	HAL_Delay(200);
+	led_rgb(120, 0, 0);
+	HAL_Delay(200);
+	led_rgb(0, 120, 0);
+	led_rgb(0, 0, 0);
+	HAL_Delay(200);
+	led_rgb(0, 0, 120);
 }
 
 //void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
@@ -270,13 +304,18 @@ int main(void) {
 	FIL meuArquivo;
 	UINT testeByte;
 
-	HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dados, 74);
+//	HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dados, 74);
 
 	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
 	if (res == FR_OK) {
+		led_rgb(100, 0, 0);
+		HAL_Delay(500);
+
+		led_rgb(0, 0, 0);
+		HAL_Delay(500);
 
 		f_open(&meuArquivo, "Arquivo.txt", FA_WRITE | FA_CREATE_ALWAYS);
-		char meusdados[] = "tudo vai dar certom\0";
+		char meusdados[] = "tudo chaaaaaama iiirtom\0";
 		f_write(&meuArquivo, meusdados, sizeof(meusdados), &testeByte);
 		f_close(&meuArquivo);
 	} else {
@@ -339,24 +378,28 @@ int main(void) {
 
 		/* USER CODE BEGIN 3 */
 
-		if (canTail != canHead) {
-			CAN_MSG_t msg = canQueue[canTail];
-
-			canTail = (canTail + 1) % CAN_QUEUE_SIZE;
-
-			printf("ID: 0x%03lX DLC: %d DATA: ", msg.id, msg.dlc);
-
-			for (int i = 0; i < msg.dlc; i++) {
-				printf("%02X ", msg.data[i]);
-			}
-
-			printf("\r\n");
+		if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData)
+				== HAL_OK) {
+			printf("can message received");
 		}
 
-		led_rgb(0, 0, 0);
-		HAL_Delay(1000);
-		led_rgb(255, 0, 0);
-		//	     TxData_loopback[0] = 1;
+		HAL_Delay(50);
+
+//		uint32_t next = (canHead + 1) % CAN_QUEUE_SIZE;
+//
+//		if (next != canTail) {
+//			canQueue[canHead].id = RxHeader.Identifier;
+//
+//			canQueue[canHead].dlc = RxHeader.DataLength >> 16;
+//
+//			memcpy((void*) canQueue[canHead].data, RxData, 8);
+//
+//			canHead = next;
+//		}
+
+//		blink_rgb();
+
+//	     TxData_loopback[0] = 1;
 //	     TxData_loopback[1] = 2;
 //	     TxData_loopback[2] = 3;
 //	     TxData_loopback[3] = 4;
@@ -549,7 +592,7 @@ static void MX_TIM2_Init(void) {
 	htim2.Instance = TIM2;
 	htim2.Init.Prescaler = 0;
 	htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim2.Init.Period = 40 - 1;
+	htim2.Init.Period = 39;
 	htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 	if (HAL_TIM_Base_Init(&htim2) != HAL_OK) {
