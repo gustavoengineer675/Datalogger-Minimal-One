@@ -111,11 +111,6 @@ int fputc(int ch, FILE *f) {
 	HAL_UART_Transmit(&huart1, (uint8_t*) &ch, 1, HAL_MAX_DELAY);
 	return ch;
 }
-
-int _write(int file, char *ptr, int len) {
-	HAL_UART_Transmit(&huart1, (uint8_t*) ptr, len, HAL_MAX_DELAY);
-	return len;
-}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -126,25 +121,6 @@ volatile uint8_t pwmBusy = 0;
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim) {
 	HAL_TIM_PWM_Stop_DMA(htim, TIM_CHANNEL_3);
 	pwmBusy = 0;
-}
-
-void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
-	if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
-		if (HAL_FDCAN_GetRxMessage(hfdcan,
-		FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
-			uint32_t next = (canHead + 1) % CAN_QUEUE_SIZE;
-
-			if (next != canTail) {
-				canQueue[canHead].id = RxHeader.Identifier;
-
-				canQueue[canHead].dlc = RxHeader.DataLength >> 16;
-
-				memcpy((void*) canQueue[canHead].data, RxData, 8);
-
-				canHead = next;
-			}
-		}
-	}
 }
 
 void ws2812_show(void) {
@@ -221,39 +197,26 @@ void blink_rgb(void) {
 	led_rgb(0, 0, 120);
 }
 
-//void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
-//{
-//  /* Prevent unused argument(s) compilation warning */
-//  //UNUSED(hfdcan);
-//  //UNUSED(RxFifo0ITs);
-//
-//
-//	HAL_UART_Transmit(&huart1, "fala", 5, HAL_MAX_DELAY);
-//	char call[] = "Mensagem recebida, callback acionado! \n";
-//	HAL_UART_Transmit(&huart1, (uint8_t*)call, strlen(call), HAL_MAX_DELAY);
-//	if(HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK){
-//
-//
-//		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-//
-//		id = RxHeader.Identifier;
-//
-//		//Organiza_Dados(id);
-//
-//		imu[0] = (int16_t)(RxData[1] << 8 | RxData[0]); // X Conversão dos dados que chegam,
-//		imu[1] = (int16_t)(RxData[3] << 8 | RxData[2]); // Y
-//		imu[2] = (int16_t)(RxData[5] << 8 | RxData[4]); // Z
-//
-//		char buff[30];
-//		snprintf(buff, sizeof(buff),"X: %d   Y: %d   Z: %d\n\r", imu[0], imu[1], imu[2] );
-//		HAL_UART_Transmit(&huart1, (uint8_t*)buff, strlen(buff), HAL_MAX_DELAY);
-////		printf("X: %d   Y: %d   Z: %d\n\r", imu[0], imu[1], imu[2]);
-//	}
-//	else{
-//		char calling[] = "Falha no Recebimento CAN";
-//		HAL_UART_Transmit(&huart1, (uint8_t*)calling, strlen(calling), HAL_MAX_DELAY);
-//	}
-//}
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
+	if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData)
+			== HAL_OK) {
+
+		HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+
+		id = RxHeader.Identifier;
+
+		//Organiza_Dados(id);
+
+		imu[0] = (int16_t) (RxData[1] << 8 | RxData[0]); // X Conversão dos dados que chegam,
+		imu[1] = (int16_t) (RxData[3] << 8 | RxData[2]); // Y
+		imu[2] = (int16_t) (RxData[5] << 8 | RxData[4]); // Z
+
+		char buff[30];
+		snprintf(buff, sizeof(buff), "X: %d   Y: %d   Z: %d\n\r", imu[0],
+				imu[1], imu[2]);
+//		printf("X: %d   Y: %d   Z: %d\n\r", imu[0], imu[1], imu[2]);
+	}
+}
 /* USER CODE END 0 */
 
 /**
@@ -308,16 +271,26 @@ int main(void) {
 
 	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
 	if (res == FR_OK) {
-		led_rgb(100, 0, 0);
-		HAL_Delay(500);
+//		led_rgb(100, 0, 0);
+//		HAL_Delay(500);
+//
+//		led_rgb(0, 0, 0);
+//		HAL_Delay(500);
 
-		led_rgb(0, 0, 0);
-		HAL_Delay(500);
+		res = f_open(&meuArquivo, "Arquivo.txt",
+		FA_WRITE | FA_CREATE_ALWAYS);
 
-		f_open(&meuArquivo, "Arquivo.txt", FA_WRITE | FA_CREATE_ALWAYS);
-		char meusdados[] = "tudo chaaaaaama iiirtom\0";
-		f_write(&meuArquivo, meusdados, sizeof(meusdados), &testeByte);
-		f_close(&meuArquivo);
+		printf("f_open = %d\r\n", res);
+
+		char meusdados[] = "tudo que ha\0";
+		res = f_write(&meuArquivo, meusdados, strlen(meusdados), &testeByte);
+
+		printf("f_write = %d bytes=%u\r\n", res, testeByte);
+
+		res = f_close(&meuArquivo);
+
+		printf("f_close = %d\r\n", res);
+		f_mount(NULL, SDPath, 1);
 	} else {
 		printf("Falha ao montar Logical driver do Cartão sd \r\n");
 	}
@@ -374,16 +347,16 @@ int main(void) {
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
+		if (HAL_FDCAN_GetRxMessage(&hfdcan2,
+		FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
+			HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+
+			printf("RX ID = 0x%03lX\r\n", RxHeader.Identifier);
+		}
+
 		/* USER CODE END WHILE */
 
 		/* USER CODE BEGIN 3 */
-
-		if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData)
-				== HAL_OK) {
-			printf("can message received");
-		}
-
-		HAL_Delay(50);
 
 //		uint32_t next = (canHead + 1) % CAN_QUEUE_SIZE;
 //
@@ -396,9 +369,7 @@ int main(void) {
 //
 //			canHead = next;
 //		}
-
 //		blink_rgb();
-
 //	     TxData_loopback[0] = 1;
 //	     TxData_loopback[1] = 2;
 //	     TxData_loopback[2] = 3;
@@ -506,16 +477,16 @@ static void MX_FDCAN2_Init(void) {
 	hfdcan2.Init.DataTimeSeg2 = 1;
 	hfdcan2.Init.MessageRAMOffset = 0;
 	hfdcan2.Init.StdFiltersNbr = 1;
-	hfdcan2.Init.ExtFiltersNbr = 0;
-	hfdcan2.Init.RxFifo0ElmtsNbr = 0;
+	hfdcan2.Init.ExtFiltersNbr = 1;
+	hfdcan2.Init.RxFifo0ElmtsNbr = 8;
 	hfdcan2.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
-	hfdcan2.Init.RxFifo1ElmtsNbr = 0;
+	hfdcan2.Init.RxFifo1ElmtsNbr = 8;
 	hfdcan2.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
-	hfdcan2.Init.RxBuffersNbr = 0;
+	hfdcan2.Init.RxBuffersNbr = 1;
 	hfdcan2.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
-	hfdcan2.Init.TxEventsNbr = 0;
-	hfdcan2.Init.TxBuffersNbr = 0;
-	hfdcan2.Init.TxFifoQueueElmtsNbr = 0;
+	hfdcan2.Init.TxEventsNbr = 1;
+	hfdcan2.Init.TxBuffersNbr = 1;
+	hfdcan2.Init.TxFifoQueueElmtsNbr = 8;
 	hfdcan2.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
 	hfdcan2.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
 	if (HAL_FDCAN_Init(&hfdcan2) != HAL_OK) {
@@ -561,11 +532,34 @@ static void MX_SDMMC2_SD_Init(void) {
 	hsd2.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
 	hsd2.Init.BusWide = SDMMC_BUS_WIDE_1B;
 	hsd2.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
-	hsd2.Init.ClockDiv = 200;
-	if (HAL_SD_Init(&hsd2) != HAL_OK) {
-		Error_Handler();
-	}
+	hsd2.Init.ClockDiv = 8;
+
 	/* USER CODE BEGIN SDMMC2_Init 2 */
+
+	uint8_t sd_ok = 0;
+
+	for (int tentativas = 0; tentativas < 10; tentativas++) {
+		HAL_SD_DeInit(&hsd2);
+
+		HAL_Delay(100);
+
+		if (HAL_SD_Init(&hsd2) == HAL_OK) {
+			sd_ok = 1;
+			printf("SD inicializado na tentativa %d\r\n", tentativas + 1);
+			break;
+		}
+
+		printf("Falha SD tentativa %d, erro=0x%08lx\r\n", tentativas + 1,
+				hsd2.ErrorCode);
+
+		HAL_Delay(500);
+	}
+
+	if (!sd_ok) {
+		printf("Nao foi possivel inicializar SD\r\n");
+
+		NVIC_SystemReset();
+	}
 
 	/* USER CODE END SDMMC2_Init 2 */
 
