@@ -27,10 +27,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "FreeRTOS.h"
-#include "task.h"
-#include "semphr.h"
-
 #define CAN_QUEUE_SIZE 32
 
 typedef struct {
@@ -43,6 +39,8 @@ typedef struct {
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
+typedef StaticTask_t osStaticThreadDef_t;
+typedef StaticQueue_t osStaticMessageQDef_t;
 /* USER CODE BEGIN PTD */
 
 /* USER CODE END PTD */
@@ -74,6 +72,22 @@ UART_HandleTypeDef huart1;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = { .name = "defaultTask",
 		.stack_size = 128 * 4, .priority = (osPriority_t) osPriorityNormal, };
+/* Definitions for Periodic_SD_sav */
+osThreadId_t Periodic_SD_savHandle;
+uint32_t sd_task_buffer[256];
+osStaticThreadDef_t sd_ControlBlock;
+const osThreadAttr_t Periodic_SD_sav_attributes = { .name = "Periodic_SD_sav",
+		.cb_mem = &sd_ControlBlock, .cb_size = sizeof(sd_ControlBlock),
+		.stack_mem = &sd_task_buffer[0], .stack_size = sizeof(sd_task_buffer),
+		.priority = (osPriority_t) osPriorityLow, };
+/* Definitions for can_data_queue */
+osMessageQueueId_t can_data_queueHandle;
+uint8_t can_data_queueBuffer[100 * sizeof(can_data_t)];
+osStaticMessageQDef_t can_data_queueControlBlock;
+const osMessageQueueAttr_t can_data_queue_attributes = { .name =
+		"can_data_queue", .cb_mem = &can_data_queueControlBlock, .cb_size =
+		sizeof(can_data_queueControlBlock), .mq_mem = &can_data_queueBuffer,
+		.mq_size = sizeof(can_data_queueBuffer) };
 /* USER CODE BEGIN PV */
 
 //FDCAN_FilterTypeDef sFilterConfig;
@@ -103,9 +117,6 @@ uint16_t timestamp_us;
 
 volatile uint32_t systemMs = 0;
 
-SemaphoreHandle_t sd_write_sem;
-QueueHandle_t can_data_queue;
-
 UBaseType_t can_queue_len = 100;
 
 can_data_t callbk_can_buff[100];
@@ -124,6 +135,7 @@ static void MX_UART4_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 void StartDefaultTask(void *argument);
+void Periodic_SD_save_task(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -237,26 +249,6 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 	printf("%lu us ID=0x%03lX\r\n", ts, RxHeader.Identifier);
 
 }
-
-void Periodic_SD_save_task(void *pvParameters) {
-	while (1) {
-		FATFS meuFATFS;
-		FIL meuArquivo;
-		UINT testeByte;
-
-//		xSemaphoreTake(sd_write_sem, portMAX_DELAY);
-
-		char line[1024] = { 0 };
-
-		FRESULT res = f_mount(&meuFATFS, SDPath, 1);
-		if (res == FR_OK) {
-
-			res = f_open(&meuArquivo, "Arquivo.txt",
-			FA_WRITE | FA_CREATE_ALWAYS);
-
-			char csv_line[2048];
-
-			callbk_can_buff[0].data = 234;
 
 //			snprintf(csv_line, sizeof(csv_line),
 //			// HAL_GetTick()
@@ -398,14 +390,7 @@ void Periodic_SD_save_task(void *pvParameters) {
 //					callbk_can_buff[80].data,    // 81 GENERAL_GNSS
 //					callbk_can_buff[81].data     // 82 ELETROBUILD_TEMPERATURE
 //					);
-			res = f_write(&meuArquivo, csv_line, strlen(csv_line), &testeByte);
-			res = f_close(&meuArquivo);
-			f_mount(NULL, SDPath, 1);
-		} else {
-			printf("Falha ao montar Logical driver do Cartão sd \r\n");
-		}
-	}
-}
+
 /* USER CODE END 0 */
 
 /**
@@ -443,15 +428,29 @@ int main(void) {
 	MX_USART1_UART_Init();
 	MX_FATFS_Init();
 	MX_SDMMC2_SD_Init();
-	MX_FDCAN2_Init();
-	MX_UART4_Init();
-	MX_TIM2_Init();
-	MX_TIM3_Init();
+//	MX_FDCAN2_Init();
+//	MX_UART4_Init();
+//	MX_TIM2_Init();
+//	MX_TIM3_Init();
 	/* USER CODE BEGIN 2 */
 
 	HAL_NVIC_SetPriority(FDCAN2_IT0_IRQn, 6, 0);
 	HAL_NVIC_EnableIRQ(FDCAN2_IT0_IRQn);
 	HAL_NVIC_SetPriority(SDMMC2_IRQn, 5, 0);
+	HAL_NVIC_EnableIRQ(SDMMC2_IRQn);
+
+//	if (HAL_SD_ConfigWideBusOperation(&hsd2,
+//	SDMMC_BUS_WIDE_4B) != HAL_OK) {
+//		printf("Erro bus width\r\n");
+//	}
+
+	HAL_SD_CardInfoTypeDef info;
+
+	if (HAL_SD_GetCardInfo(&hsd2, &info) == HAL_OK) {
+		printf("SD OK\r\n");
+	} else {
+		printf("SD FAIL\r\n");
+	}
 
 	/* USER CODE END 2 */
 
@@ -463,7 +462,6 @@ int main(void) {
 	/* USER CODE END RTOS_MUTEX */
 
 	/* USER CODE BEGIN RTOS_SEMAPHORES */
-	sd_write_sem = xSemaphoreCreateBinary();
 	/* add semaphores, ... */
 	/* USER CODE END RTOS_SEMAPHORES */
 
@@ -471,19 +469,23 @@ int main(void) {
 	/* start timers, add new ones, ... */
 	/* USER CODE END RTOS_TIMERS */
 
+	/* Create the queue(s) */
+	/* creation of can_data_queue */
+	can_data_queueHandle = osMessageQueueNew(100, sizeof(can_data_t),
+			&can_data_queue_attributes);
+
 	/* USER CODE BEGIN RTOS_QUEUES */
-	can_data_queue = xQueueCreate(can_queue_len, sizeof(can_data_t));
 	/* add queues, ... */
 	/* USER CODE END RTOS_QUEUES */
 
 	/* Create the thread(s) */
 	/* creation of defaultTask */
-	defaultTaskHandle = osThreadNew(StartDefaultTask, NULL,
-			&defaultTask_attributes);
+
+	/* creation of Periodic_SD_sav */
+	Periodic_SD_savHandle = osThreadNew(Periodic_SD_save_task, NULL,
+			&Periodic_SD_sav_attributes);
 
 	/* USER CODE BEGIN RTOS_THREADS */
-	xTaskCreate(Periodic_SD_save_task, "Periodic_SD_save_task", 4096, NULL, 8,
-	NULL);
 	/* add threads, ... */
 	/* USER CODE END RTOS_THREADS */
 
@@ -507,6 +509,8 @@ int main(void) {
 		}
 
 		timestamp_us = __HAL_TIM_GET_COUNTER(&htim3);
+
+		osDelay(100);
 
 		/* USER CODE END WHILE */
 
@@ -977,6 +981,44 @@ void StartDefaultTask(void *argument) {
 	/* USER CODE END 5 */
 }
 
+/* USER CODE BEGIN Header_Periodic_SD_save_task */
+/**
+ * @brief Function implementing the Periodic_SD_sav thread.
+ * @param argument: Not used
+ * @retval None
+ */
+/* USER CODE END Header_Periodic_SD_save_task */
+void Periodic_SD_save_task(void *argument) {
+	/* USER CODE BEGIN Periodic_SD_save_task */
+	/* Infinite loop */
+	FATFS meuFATFS;
+	FIL meuArquivo;
+	UINT testeByte;
+
+	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
+	osDelay(100);
+	for (;;) {
+
+		if (res == FR_OK) {
+			res = f_open(&meuArquivo, "teste_arquivo.txt",
+			FA_WRITE | FA_CREATE_ALWAYS);
+
+			if (res == FR_OK) {
+				char texto[] = "baaaaaaubaaaaa\r\n";
+
+				f_write(&meuArquivo, texto, strlen(texto), &testeByte);
+
+				f_close(&meuArquivo);
+			}
+
+		}
+
+		osDelay(100);
+
+	}
+	/* USER CODE END Periodic_SD_save_task */
+}
+
 /* MPU Configuration */
 
 void MPU_Config(void) {
@@ -1025,7 +1067,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 	if (htim->Instance == TIM3) {
 		systemMs++;
 		BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-		xSemaphoreGiveFromISR(sd_write_sem, &xHigherPriorityTaskWoken);
 		portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 	}
 
