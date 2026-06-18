@@ -18,7 +18,6 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
 #include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -29,18 +28,16 @@
 
 #define CAN_QUEUE_SIZE 32
 
-typedef struct {
-	uint16_t timestamp;
-	uint32_t id;
-	uint64_t data;
+#define MAX_CAN_ID 350
 
+typedef struct {
+	uint32_t id;
+	uint16_t data;
 } can_data_t;
 
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
-typedef StaticTask_t osStaticThreadDef_t;
-typedef StaticQueue_t osStaticMessageQDef_t;
 /* USER CODE BEGIN PTD */
 
 /* USER CODE END PTD */
@@ -68,26 +65,6 @@ DMA_HandleTypeDef hdma_tim2_ch3;
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart1;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = { .name = "defaultTask",
-		.stack_size = 128 * 4, .priority = (osPriority_t) osPriorityNormal, };
-/* Definitions for Periodic_SD_sav */
-osThreadId_t Periodic_SD_savHandle;
-uint32_t sd_task_buffer[256];
-osStaticThreadDef_t sd_ControlBlock;
-const osThreadAttr_t Periodic_SD_sav_attributes = { .name = "Periodic_SD_sav",
-		.cb_mem = &sd_ControlBlock, .cb_size = sizeof(sd_ControlBlock),
-		.stack_mem = &sd_task_buffer[0], .stack_size = sizeof(sd_task_buffer),
-		.priority = (osPriority_t) osPriorityLow, };
-/* Definitions for can_data_queue */
-osMessageQueueId_t can_data_queueHandle;
-uint8_t can_data_queueBuffer[100 * sizeof(can_data_t)];
-osStaticMessageQDef_t can_data_queueControlBlock;
-const osMessageQueueAttr_t can_data_queue_attributes = { .name =
-		"can_data_queue", .cb_mem = &can_data_queueControlBlock, .cb_size =
-		sizeof(can_data_queueControlBlock), .mq_mem = &can_data_queueBuffer,
-		.mq_size = sizeof(can_data_queueBuffer) };
 /* USER CODE BEGIN PV */
 
 //FDCAN_FilterTypeDef sFilterConfig;
@@ -117,10 +94,10 @@ uint16_t timestamp_us;
 
 volatile uint32_t systemMs = 0;
 
-UBaseType_t can_queue_len = 100;
-
 can_data_t callbk_can_buff[100];
+char csv_line[2048];
 
+int16_t can_id_to_index[MAX_CAN_ID + 1];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -134,9 +111,6 @@ static void MX_FDCAN2_Init(void);
 static void MX_UART4_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
-void StartDefaultTask(void *argument);
-void Periodic_SD_save_task(void *argument);
-
 /* USER CODE BEGIN PFP */
 
 int fputc(int ch, FILE *f) {
@@ -242,154 +216,12 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 	if (index >= 0 && index <= 81) {
 		// Copia os 8 bytes diretamente para o uint64_t data
 		memcpy(&callbk_can_buff[index].data, RxData, 8);
-		callbk_can_buff[index].timestamp = HAL_GetTick();
 		callbk_can_buff[index].id = RxHeader.Identifier;
 	}
 
 	printf("%lu us ID=0x%03lX\r\n", ts, RxHeader.Identifier);
 
 }
-
-//			snprintf(csv_line, sizeof(csv_line),
-//			// HAL_GetTick()
-//					"%lu,"
-//					// 0-6
-//							"%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 7-14
-//							"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 15-23
-//							"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 24-32
-//							"%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 33-38
-//							"%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 39-44
-//							"%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 45-49
-//							"%llu,%llu,%llu,%llu,%llu,"
-//							// 50-55
-//							"%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 56-61
-//							"%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 62-65
-//							"%llu,%llu,%llu,%llu,"
-//							// 66-71
-//							"%llu,%llu,%llu,%llu,%llu,%llu,"
-//							// 72-76
-//							"%llu,%llu,%llu,%llu,%llu,"
-//							// 77-81
-//							"%llu,%llu,%llu,%llu,%llu\r\n",
-//
-//					HAL_GetTick(),
-//
-//					/* 0 - 6 */
-//					callbk_can_buff[0].data,     // 1 GYROSCOPE
-//					callbk_can_buff[1].data,     // 2 ACCELEROMETER
-//					callbk_can_buff[2].data,     // 3 YAW_INPUT
-//					callbk_can_buff[3].data,     // 4 RESERVED
-//					callbk_can_buff[4].data,     // 5 RESERVED
-//					callbk_can_buff[5].data,     // 6 RESERVED
-//					callbk_can_buff[6].data,     // 7 RESERVED
-//
-//					/* 7 - 14 */
-//					callbk_can_buff[7].data,     // 8 STATUS_AIR + GLV + SHUNT
-//					callbk_can_buff[8].data,     // 9 TOTAL_VOLTAGE_STACK1-4
-//					callbk_can_buff[9].data, // 10 TOTAL_VOLTAGE_STACK4-6 + MIN_VOLT
-//					callbk_can_buff[10].data,    // 11 MAX_VOLT + MAX_TEMP
-//					callbk_can_buff[11].data,    // 12 RESERVED
-//					callbk_can_buff[12].data,    // 13 RESERVED
-//					callbk_can_buff[13].data,    // 14 RESERVED
-//					callbk_can_buff[14].data,    // 15 RESERVED
-//
-//					/* 15 - 23 */
-//					callbk_can_buff[15].data,    // 16 DRIVER_INPUTS
-//					callbk_can_buff[16].data,    // 17 REF_TORQUE
-//					callbk_can_buff[17].data,    // 18 WHEEL_SPEED
-//					callbk_can_buff[18].data,    // 19 WHEEL_ACCEL
-//					callbk_can_buff[19].data,    // 20 LEFT_MOTOR_TRACTIVE
-//					callbk_can_buff[20].data,    // 21 LEFT_MOTOR_CURRENT
-//					callbk_can_buff[21].data,    // 22 LEFT_MOTOR_ENERGY_TEMP
-//					callbk_can_buff[22].data,    // 23 LEFT_MOTOR_COMMUNICATION
-//					callbk_can_buff[23].data,    // 24 LEFT_MOTOR_STATE
-//
-//					/* 24 - 32 */
-//					callbk_can_buff[24].data,    // 25 RIGHT_MOTOR_TRACTIVE
-//					callbk_can_buff[25].data,    // 26 RIGHT_MOTOR_CURRENT
-//					callbk_can_buff[26].data,    // 27 RIGHT_MOTOR_ENERGY_TEMP
-//					callbk_can_buff[27].data,    // 28 RIGHT_MOTOR_COMMUNICATION
-//					callbk_can_buff[28].data,    // 29 RIGHT_MOTOR_STATE
-//					callbk_can_buff[29].data,    // 30 RESERVED
-//					callbk_can_buff[30].data,    // 31 RESERVED
-//					callbk_can_buff[31].data,    // 32 RESERVED
-//					callbk_can_buff[32].data,    // 33 RESERVED
-//
-//					/* 33 - 38 */
-//					callbk_can_buff[33].data,    // 34 STACK_VOLTAGE
-//					callbk_can_buff[34].data,    // 35 STACK_VOLTAGE
-//					callbk_can_buff[35].data,    // 36 STACK_VOLTAGE
-//					callbk_can_buff[36].data,    // 37 STACK_VOLTAGE
-//					callbk_can_buff[37].data,    // 38 STACK_VOLTAGE
-//					callbk_can_buff[38].data,    // 39 STACK_VOLTAGE
-//
-//					/* 39 - 44 */
-//					callbk_can_buff[39].data,    // 40 STACK_TEMPERATURE
-//					callbk_can_buff[40].data,    // 41 STACK_TEMPERATURE
-//					callbk_can_buff[41].data,    // 42 STACK_TEMPERATURE
-//					callbk_can_buff[42].data,    // 43 STACK_TEMPERATURE
-//					callbk_can_buff[43].data,    // 44 STACK_TEMPERATURE
-//					callbk_can_buff[44].data,    // 45 STACK_TEMPERATURE
-//
-//					/* 45 - 49 */
-//					callbk_can_buff[45].data,    // 46 GENERAL_BMS
-//					callbk_can_buff[46].data,    // 47 BMS_ERROR_LOG
-//					callbk_can_buff[47].data,    // 48 BMS_ERROR_LOG
-//					callbk_can_buff[48].data,    // 49 ERROR_SUM_SLAVE
-//					callbk_can_buff[49].data,   // 50 ERROR_SUM_SLAVE + BMS_MODE
-//
-//					/* 50 - 55 */
-//					callbk_can_buff[50].data,    // 51 ERROR_MODE_STACK_VOLTAGE
-//					callbk_can_buff[51].data,    // 52 ERROR_MODE_STACK_VOLTAGE
-//					callbk_can_buff[52].data,    // 53 ERROR_MODE_STACK_VOLTAGE
-//					callbk_can_buff[53].data,    // 54 ERROR_MODE_STACK_VOLTAGE
-//					callbk_can_buff[54].data,    // 55 ERROR_MODE_STACK_VOLTAGE
-//					callbk_can_buff[55].data,    // 56 ERROR_MODE_STACK_VOLTAGE
-//
-//					/* 56 - 61 */
-//					callbk_can_buff[56].data, // 57 ERROR_MODE_STACK_TEMPERATURE
-//					callbk_can_buff[57].data, // 58 ERROR_MODE_STACK_TEMPERATURE
-//					callbk_can_buff[58].data, // 59 ERROR_MODE_STACK_TEMPERATURE
-//					callbk_can_buff[59].data, // 60 ERROR_MODE_STACK_TEMPERATURE
-//					callbk_can_buff[60].data, // 61 ERROR_MODE_STACK_TEMPERATURE
-//					callbk_can_buff[61].data, // 62 ERROR_MODE_STACK_TEMPERATURE
-//
-//					/* 62 - 65 */
-//					callbk_can_buff[62].data,    // 63 RESERVED
-//					callbk_can_buff[63].data,    // 64 RESERVED
-//					callbk_can_buff[64].data,    // 65 RESERVED
-//					callbk_can_buff[65].data,    // 66 RESERVED
-//
-//					/* 66 - 71 */
-//					callbk_can_buff[66].data,    // 67 ECU_MODE
-//					callbk_can_buff[67].data,    // 68 TORQUE_GAIN
-//					callbk_can_buff[68].data,    // 69 CONTROL_EVENTS
-//					callbk_can_buff[69].data,    // 70 HODOMETER
-//					callbk_can_buff[70].data,    // 71 SET_POINT
-//					callbk_can_buff[71].data,    // 72 SLIP_RATE
-//
-//					/* 72 - 76 */
-//					callbk_can_buff[72].data,    // 73 NTC1-3
-//					callbk_can_buff[73].data,    // 74 NTC4-6
-//					callbk_can_buff[74].data,    // 75 NTC7-9
-//					callbk_can_buff[75].data,    // 76 MLX1
-//					callbk_can_buff[76].data,    // 77 MLX2
-//
-//					/* 77 - 81 */
-//					callbk_can_buff[77].data,    // 78 TIMESTAMP_GNSS
-//					callbk_can_buff[78].data,    // 79 LATITUDE
-//					callbk_can_buff[79].data,    // 80 LONGITUDE
-//					callbk_can_buff[80].data,    // 81 GENERAL_GNSS
-//					callbk_can_buff[81].data     // 82 ELETROBUILD_TEMPERATURE
-//					);
 
 /* USER CODE END 0 */
 
@@ -428,10 +260,10 @@ int main(void) {
 	MX_USART1_UART_Init();
 	MX_FATFS_Init();
 	MX_SDMMC2_SD_Init();
-//	MX_FDCAN2_Init();
-//	MX_UART4_Init();
-//	MX_TIM2_Init();
-//	MX_TIM3_Init();
+	MX_FDCAN2_Init();
+	MX_UART4_Init();
+	MX_TIM2_Init();
+	MX_TIM3_Init();
 	/* USER CODE BEGIN 2 */
 
 	HAL_NVIC_SetPriority(FDCAN2_IT0_IRQn, 6, 0);
@@ -452,51 +284,180 @@ int main(void) {
 		printf("SD FAIL\r\n");
 	}
 
+	FATFS meuFATFS;
+	FIL meuArquivo;
+	UINT testeByte;
+
+	//	HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dados, 74);
+
+	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
+	uint32_t timestamp_base = __HAL_TIM_GET_COUNTER(&htim3);
+	memset(callbk_can_buff, 0, sizeof(callbk_can_buff));
+	memset(can_id_to_index, -1, sizeof(can_id_to_index));
+
+	can_id_to_index[259] = 1;   // variável 1
+	can_id_to_index[260] = 2;   // variável 2
+	can_id_to_index[3] = 3;   // variável 3
+	can_id_to_index[321] = 8;   // variável 4
+	can_id_to_index[312] = 9;   // variável 4
+	can_id_to_index[317] = 11;   // variável 4
+	can_id_to_index[264] = 12;   // variável 4
+	can_id_to_index[262] = 13;   // variável 4
+	can_id_to_index[263] = 14;   // variável 4
+	can_id_to_index[265] = 15;   // variável 4
+	can_id_to_index[76] = 16;   // variável 4
+	can_id_to_index[79] = 17;   // variável 4
+	can_id_to_index[80] = 18;   // variável 4
+	can_id_to_index[81] = 19;   // variável 4
+	can_id_to_index[88] = 20;   // variável 4
+	can_id_to_index[228] = 21;   // variável 4
+	can_id_to_index[89] = 22;   // variável 4
+	can_id_to_index[90] = 23;   // variável 4
+	can_id_to_index[91] = 24;   // variável 4
+	can_id_to_index[95] = 25;   // variável 4
+	can_id_to_index[242] = 26;   // variável 4
+	can_id_to_index[96] = 27;   // variável 4
+	can_id_to_index[97] = 28;   // variável 4
+	can_id_to_index[98] = 29;   // variável 4
+	can_id_to_index[300] = 34;
+	can_id_to_index[301] = 35;
+	can_id_to_index[302] = 36;
+	can_id_to_index[303] = 37;
+	can_id_to_index[304] = 38;
+	can_id_to_index[305] = 39;
+	can_id_to_index[306] = 40;
+	can_id_to_index[307] = 41;
+	can_id_to_index[308] = 42;
+	can_id_to_index[309] = 43;
+	can_id_to_index[310] = 44;
+	can_id_to_index[311] = 45;
+	can_id_to_index[314] = 45;
+	can_id_to_index[315] = 45;
+	can_id_to_index[316] = 45;
+	can_id_to_index[318] = 46;
+	can_id_to_index[319] = 47;
+	can_id_to_index[322] = 48;
+	can_id_to_index[323] = 49;
+	can_id_to_index[324] = 50;
+	can_id_to_index[325] = 51;
+	can_id_to_index[326] = 52;
+	can_id_to_index[327] = 53;
+	can_id_to_index[328] = 54;
+	can_id_to_index[329] = 55;
+	can_id_to_index[330] = 56;
+	can_id_to_index[331] = 57;
+	can_id_to_index[332] = 58;
+	can_id_to_index[333] = 59;
+	can_id_to_index[334] = 60;
+	can_id_to_index[335] = 61;
+	can_id_to_index[336] = 62;
+
+	int16_t index = -1;
+
+	const char *header = "TIMESTAMP,"
+			"GYROSCOPE,"
+			"ACCELEROMETER,"
+			"YAW_INPUT,"
+			"RESERVED,"
+			"RESERVED,"
+			"RESERVED,"
+			"RESERVED,"
+			"STATUS_AIR + GLV + SHUNT,"
+			"TOTAL_VOLTAGE_STACK1-3,"
+			"TOTAL_VOLTAGE_STACK4-6,"
+			"ACCUMULATOR INFORMATION,"
+			"TIMESTAMP_GNSS,"
+			"LATITUDE,"
+			"LONGITUDE,"
+			"GENERAL_GNSS,"
+			"DRIVER_INPUTS,"
+			"REF_TORQUE,"
+			"WHEEL_SPEED,"
+			"WHEEL_ACCEL,"
+			"LEFT_MOTOR_TRACTIVE,"
+			"LEFT_MOTOR_CURRENT,"
+			"LEFT_MOTOR_ENERGY_TEMP,"
+			"LEFT_MOTOR_COMMUNICATION,"
+			"LEFT_MOTOR_STATE,"
+			"RIGHT_MOTOR_TRACTIVE,"
+			"RIGHT_MOTOR_CURRENT,"
+			"RIGHT_MOTOR_ENERGY_TEMP,"
+			"RIGHT_MOTOR_COMMUNICATION,"
+			"RIGHT_MOTOR_STATE,"
+			"RESERVED,"
+			"RESERVED,"
+			"RESERVED,"
+			"RESERVED,"
+			"STACK_VOLTAGE_1,"
+			"STACK_VOLTAGE_2,"
+			"STACK_VOLTAGE_3,"
+			"STACK_VOLTAGE_4,"
+			"STACK_VOLTAGE_5,"
+			"STACK_VOLTAGE_6,"
+			"STACK_TEMPERATURE_1,"
+			"STACK_TEMPERATURE_2,"
+			"STACK_TEMPERATURE_3,"
+			"STACK_TEMPERATURE_4,"
+			"STACK_TEMPERATURE_5,"
+			"STACK_TEMPERATURE_6,"
+			"BMS_ERROR_LOG_1,"
+			"BMS_ERROR_LOG_2,"
+			"ERROR_SUM_SLAVE_1,"
+			"ERROR_SUM_SLAVE_2,"
+			"BMS MODE,"
+			"ERROR_MODE_STACK_VOLTAGE_1,"
+			"ERROR_MODE_STACK_VOLTAGE_2,"
+			"ERROR_MODE_STACK_VOLTAGE_3,"
+			"ERROR_MODE_STACK_VOLTAGE_4,"
+			"ERROR_MODE_STACK_VOLTAGE_5,"
+			"ERROR_MODE_STACK_VOLTAGE_6,"
+			"ERROR_MODE_STACK_TEMPERATURE_1,"
+			"ERROR_MODE_STACK_TEMPERATURE_2,"
+			"ERROR_MODE_STACK_TEMPERATURE_3,"
+			"ERROR_MODE_STACK_TEMPERATURE_4,"
+			"ERROR_MODE_STACK_TEMPERATURE_5,"
+			"ERROR_MODE_STACK_TEMPERATURE_6,"
+			"ADDR VOLT MIN,"
+			"ADDR VOLT MAX,"
+			"ADDR MAX TEMP,"
+			"DESIRED YAW,"
+			"ECU_MODE,"
+			"TORQUE_GAIN,"
+			"CONTROL_EVENTS,"
+			"HODOMETER,"
+			"SET_POINT,"
+			"SLIP_RATE,"
+			"NTC1-3,"
+			"NTC4-6,"
+			"NTC7-9,"
+			"MLX1,"
+			"MLX2,"
+			"ELETROBUILD_TEMPERATURE\r\n";
+
+	res = f_open(&meuArquivo, "Arquivo.txt", FA_READ);
+
+	if (res == FR_NO_FILE) {
+		// Arquivo não existe
+		res = f_open(&meuArquivo, "Arquivo.txt",
+		FA_WRITE | FA_CREATE_NEW);
+
+		if (res == FR_OK) {
+			UINT bw;
+
+			f_write(&meuArquivo, header, strlen(header), &bw);
+
+			f_close(&meuArquivo);
+
+			printf("Arquivo criado\r\n");
+		}
+	} else if (res == FR_OK) {
+		// Arquivo já existe
+		f_close(&meuArquivo);
+
+		printf("Arquivo existente\r\n");
+	}
+
 	/* USER CODE END 2 */
-
-	/* Init scheduler */
-	osKernelInitialize();
-
-	/* USER CODE BEGIN RTOS_MUTEX */
-	/* add mutexes, ... */
-	/* USER CODE END RTOS_MUTEX */
-
-	/* USER CODE BEGIN RTOS_SEMAPHORES */
-	/* add semaphores, ... */
-	/* USER CODE END RTOS_SEMAPHORES */
-
-	/* USER CODE BEGIN RTOS_TIMERS */
-	/* start timers, add new ones, ... */
-	/* USER CODE END RTOS_TIMERS */
-
-	/* Create the queue(s) */
-	/* creation of can_data_queue */
-	can_data_queueHandle = osMessageQueueNew(100, sizeof(can_data_t),
-			&can_data_queue_attributes);
-
-	/* USER CODE BEGIN RTOS_QUEUES */
-	/* add queues, ... */
-	/* USER CODE END RTOS_QUEUES */
-
-	/* Create the thread(s) */
-	/* creation of defaultTask */
-
-	/* creation of Periodic_SD_sav */
-	Periodic_SD_savHandle = osThreadNew(Periodic_SD_save_task, NULL,
-			&Periodic_SD_sav_attributes);
-
-	/* USER CODE BEGIN RTOS_THREADS */
-	/* add threads, ... */
-	/* USER CODE END RTOS_THREADS */
-
-	/* USER CODE BEGIN RTOS_EVENTS */
-	/* add events, ... */
-	/* USER CODE END RTOS_EVENTS */
-
-	/* Start scheduler */
-	osKernelStart();
-
-	/* We should never get here as control is now taken by the scheduler */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
@@ -504,13 +465,45 @@ int main(void) {
 		if (HAL_FDCAN_GetRxMessage(&hfdcan2,
 		FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
 			HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+		}
 
-			printf("RX ID = 0x%03lX\r\n", RxHeader.Identifier);
+		index = -1;
+
+		if (RxHeader.Identifier <= MAX_CAN_ID) {
+			index = can_id_to_index[RxHeader.Identifier];
+		}
+
+		if (index >= 0) {
+			memcpy(&callbk_can_buff[index].data, RxData, sizeof(uint64_t));
+			callbk_can_buff[index].id = RxHeader.Identifier;
 		}
 
 		timestamp_us = __HAL_TIM_GET_COUNTER(&htim3);
 
-		osDelay(100);
+		if (timestamp_us - timestamp_base >= 50000) {
+			timestamp_base = timestamp_us;
+			if (res == FR_OK) {
+				res = f_open(&meuArquivo, "Arquivo.txt",
+				FA_OPEN_APPEND | FA_WRITE);
+				char *ptr = csv_line;
+
+				ptr += sprintf(ptr, "%lu", HAL_GetTick());
+
+				for (int i = 0; i < 82; i++) {
+					ptr += sprintf(ptr, ",%u", callbk_can_buff[i].data);
+				}
+
+				ptr += sprintf(ptr, "\r\n");
+
+				f_write(&meuArquivo, csv_line, strlen(csv_line), &testeByte);
+
+				res = f_close(&meuArquivo);
+
+//				res = f_mount(NULL, SDPath, 1);
+			} else {
+				printf("Falha ao montar Logical driver do Cartão sd \r\n");
+			}
+		}
 
 		/* USER CODE END WHILE */
 
@@ -652,6 +645,8 @@ static void MX_SDMMC2_SD_Init(void) {
 
 	/* USER CODE BEGIN SDMMC2_Init 0 */
 
+	uint8_t init_fail = 0;
+
 	/* USER CODE END SDMMC2_Init 0 */
 
 	/* USER CODE BEGIN SDMMC2_Init 1 */
@@ -664,7 +659,7 @@ static void MX_SDMMC2_SD_Init(void) {
 	hsd2.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
 	hsd2.Init.ClockDiv = 64;
 	if (HAL_SD_Init(&hsd2) != HAL_OK) {
-		Error_Handler();
+		init_fail = 1;
 	}
 	/* USER CODE BEGIN SDMMC2_Init 2 */
 
@@ -770,9 +765,9 @@ static void MX_TIM3_Init(void) {
 
 	/* USER CODE END TIM3_Init 1 */
 	htim3.Instance = TIM3;
-	htim3.Init.Prescaler = 127;
+	htim3.Init.Prescaler = 63;
 	htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim3.Init.Period = 50000;
+	htim3.Init.Period = 60000;
 	htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 	if (HAL_TIM_Base_Init(&htim3) != HAL_OK) {
@@ -895,7 +890,7 @@ static void MX_DMA_Init(void) {
 
 	/* DMA interrupt init */
 	/* DMA1_Stream0_IRQn interrupt configuration */
-	HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 5, 0);
+	HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 0, 0);
 	HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
 
 }
@@ -965,60 +960,6 @@ static void MX_GPIO_Init(void) {
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
-/**
- * @brief  Function implementing the defaultTask thread.
- * @param  argument: Not used
- * @retval None
- */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument) {
-	/* USER CODE BEGIN 5 */
-	/* Infinite loop */
-	for (;;) {
-		osDelay(1);
-	}
-	/* USER CODE END 5 */
-}
-
-/* USER CODE BEGIN Header_Periodic_SD_save_task */
-/**
- * @brief Function implementing the Periodic_SD_sav thread.
- * @param argument: Not used
- * @retval None
- */
-/* USER CODE END Header_Periodic_SD_save_task */
-void Periodic_SD_save_task(void *argument) {
-	/* USER CODE BEGIN Periodic_SD_save_task */
-	/* Infinite loop */
-	FATFS meuFATFS;
-	FIL meuArquivo;
-	UINT testeByte;
-
-	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
-	osDelay(100);
-	for (;;) {
-
-		if (res == FR_OK) {
-			res = f_open(&meuArquivo, "teste_arquivo.txt",
-			FA_WRITE | FA_CREATE_ALWAYS);
-
-			if (res == FR_OK) {
-				char texto[] = "baaaaaaubaaaaa\r\n";
-
-				f_write(&meuArquivo, texto, strlen(texto), &testeByte);
-
-				f_close(&meuArquivo);
-			}
-
-		}
-
-		osDelay(100);
-
-	}
-	/* USER CODE END Periodic_SD_save_task */
-}
-
 /* MPU Configuration */
 
 void MPU_Config(void) {
@@ -1066,8 +1007,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 
 	if (htim->Instance == TIM3) {
 		systemMs++;
-		BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-		portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 	}
 
 	/* USER CODE END Callback 1 */
