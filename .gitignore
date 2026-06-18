@@ -1,0 +1,22 @@
+# Build
+Debug/
+Release/
+
+# Objetos
+*.o
+*.d
+*.su
+*.cyclo
+
+# Executáveis
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+
+# CubeIDE generated
+**/subdir.mk
+**/sources.mk
+**/objects.list
+makefile
