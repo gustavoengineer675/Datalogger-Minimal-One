@@ -47,6 +47,12 @@ __weak uint8_t BSP_SD_Init(void)
   {
     return MSD_ERROR_SD_NOT_PRESENT;
   }
+
+  if (hsd2.State == HAL_SD_STATE_READY)
+  {
+    return MSD_OK;
+  }
+
   /* HAL SD initialization */
   sd_state = HAL_SD_Init(&hsd2);
 

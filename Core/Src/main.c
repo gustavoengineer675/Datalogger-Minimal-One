@@ -32,7 +32,7 @@
 
 typedef struct {
 	uint32_t id;
-	uint16_t data;
+	uint64_t data; // 8‑byte payload for CAN Classic frames
 } can_data_t;
 
 /* USER CODE END Includes */
@@ -44,6 +44,14 @@ typedef struct {
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define WS2812_LED_COUNT 1
+#define WS2812_BITS_PER_LED 24
+#define WS2812_RESET_SLOTS 100
+#define WS2812_BUFFER_SIZE (WS2812_LED_COUNT * WS2812_BITS_PER_LED + WS2812_RESET_SLOTS)
+
+#define WS2812_DUTY_0 12
+#define WS2812_DUTY_1 22
 
 /* USER CODE END PD */
 
@@ -87,7 +95,7 @@ int16_t imu[3];
 
 uint16_t id;
 
-uint16_t dados[74];
+uint16_t dados[WS2812_BUFFER_SIZE];
 uint16_t c1, c2, c3;
 
 uint16_t timestamp_us;
@@ -113,9 +121,13 @@ static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 
-int fputc(int ch, FILE *f) {
-	HAL_UART_Transmit(&huart1, (uint8_t*) &ch, 1, HAL_MAX_DELAY);
+int __io_putchar(int ch) {
+	HAL_UART_Transmit(&huart4, (uint8_t*) &ch, 1, HAL_MAX_DELAY);
 	return ch;
+}
+
+int fputc(int ch, FILE *f) {
+	return __io_putchar(ch);
 }
 /* USER CODE END PFP */
 
@@ -125,8 +137,11 @@ int fputc(int ch, FILE *f) {
 volatile uint8_t pwmBusy = 0;
 
 void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim) {
-	HAL_TIM_PWM_Stop_DMA(htim, TIM_CHANNEL_3);
-	pwmBusy = 0;
+	if (htim->Instance == TIM2) {
+		HAL_TIM_PWM_Stop_DMA(htim, TIM_CHANNEL_3);
+		__HAL_TIM_SET_COMPARE(htim, TIM_CHANNEL_3, 0);
+		pwmBusy = 0;
+	}
 }
 
 void ws2812_show(void) {
@@ -135,92 +150,78 @@ void ws2812_show(void) {
 
 	pwmBusy = 1;
 
-	HAL_TIM_PWM_Start_DMA(&htim2,
-	TIM_CHANNEL_3, (uint32_t*) dados, 74);
+	__HAL_TIM_SET_COUNTER(&htim2, 0);
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
+
+	if (HAL_TIM_PWM_Start_DMA(&htim2,
+	TIM_CHANNEL_3, (uint32_t*) dados, WS2812_BUFFER_SIZE) != HAL_OK) {
+		pwmBusy = 0;
+	}
+}
+
+void ws2812_stop(void) {
+	while (pwmBusy)
+		;
+
+	HAL_TIM_PWM_Stop_DMA(&htim2, TIM_CHANNEL_3);
+	__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 0);
+	pwmBusy = 0;
+}
+
+static void ws2812_write_byte(uint8_t value, uint16_t *buffer) {
+	for (int bit = 7; bit >= 0; bit--) {
+		*buffer++ = (value & (1 << bit)) ? WS2812_DUTY_1 : WS2812_DUTY_0;
+	}
 }
 
 void led_rgb(uint16_t red, uint16_t green, uint16_t blue) {
-	extern uint16_t dados[74];
+	uint16_t *buffer = dados;
 
-	uint16_t greenbuffer[8];
-	uint16_t redbuffer[8];
-	uint16_t bluebuffer[8];
+	ws2812_write_byte((uint8_t) green, buffer);
+	buffer += 8;
+	ws2812_write_byte((uint8_t) red, buffer);
+	buffer += 8;
+	ws2812_write_byte((uint8_t) blue, buffer);
 
-	uint16_t bit0 = 12;
-	uint16_t bit1 = 22;
-
-	/* GREEN */
-	for (int i = 7; i >= 0; i--) {
-		greenbuffer[i] = green % 2;
-		green = green / 2;
-
-		if (greenbuffer[i] == 1) {
-			dados[i] = bit1;
-		} else {
-			dados[i] = bit0;
-		}
-	}
-
-	/* RED */
-	for (int i = 7; i >= 0; i--) {
-		redbuffer[i] = red % 2;
-		red = red / 2;
-
-		if (redbuffer[i] == 1) {
-			dados[i + 8] = bit1;
-		} else {
-			dados[i + 8] = bit0;
-		}
-	}
-
-	/* BLUE */
-	for (int i = 7; i >= 0; i--) {
-		bluebuffer[i] = blue % 2;
-		blue = blue / 2;
-
-		if (bluebuffer[i] == 1) {
-			dados[i + 16] = bit1;
-		} else {
-			dados[i + 16] = bit0;
-		}
-	}
-
-	for (int i = 24; i < 74; i++) {
+	for (int i = WS2812_BITS_PER_LED; i < WS2812_BUFFER_SIZE; i++) {
 		dados[i] = 0;
 	}
 
 	ws2812_show();
 }
 
-void blink_rgb(void) {
+void ws2812_off(void) {
 	led_rgb(0, 0, 0);
-	HAL_Delay(200);
+}
+
+void blink_rgb(void) {
 	led_rgb(120, 0, 0);
 	HAL_Delay(200);
 	led_rgb(0, 120, 0);
-	led_rgb(0, 0, 0);
 	HAL_Delay(200);
 	led_rgb(0, 0, 120);
+	HAL_Delay(200);
+	ws2812_off();
 }
 
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
-	uint32_t ts;
-
-	ts = __HAL_TIM_GET_COUNTER(&htim3);
-
-	HAL_FDCAN_GetRxMessage(&hfdcan2,
-	FDCAN_RX_FIFO0, &RxHeader, RxData);
-
-	uint32_t index = RxHeader.Identifier - 1;
-
-	if (index >= 0 && index <= 81) {
-		// Copia os 8 bytes diretamente para o uint64_t data
-		memcpy(&callbk_can_buff[index].data, RxData, 8);
-		callbk_can_buff[index].id = RxHeader.Identifier;
+	uint32_t ts = __HAL_TIM_GET_COUNTER(&htim3);
+	HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &RxHeader, RxData);
+	int16_t index = -1;
+	if (RxHeader.Identifier <= MAX_CAN_ID) {
+		index = can_id_to_index[RxHeader.Identifier];
+		if (index >= 0 && index < 100) {
+			memcpy(&callbk_can_buff[index].data, RxData, sizeof(uint64_t));
+			callbk_can_buff[index].id = RxHeader.Identifier;
+		}
 	}
-
+#ifdef DEBUG_UART
+    char dbg[64];
+    snprintf(dbg, sizeof(dbg), "%lu us ID=0x%03lX\r\n", ts, RxHeader.Identifier);
+    debug_uart_puts(dbg);
+    #endif
+	// Keep printf for development if needed
 	printf("%lu us ID=0x%03lX\r\n", ts, RxHeader.Identifier);
-
 }
 
 /* USER CODE END 0 */
@@ -259,9 +260,9 @@ int main(void) {
 	MX_DMA_Init();
 	MX_USART1_UART_Init();
 	MX_FATFS_Init();
+	MX_UART4_Init();
 	MX_SDMMC2_SD_Init();
 	MX_FDCAN2_Init();
-	MX_UART4_Init();
 	MX_TIM2_Init();
 	MX_TIM3_Init();
 	/* USER CODE BEGIN 2 */
@@ -290,220 +291,88 @@ int main(void) {
 
 	//	HAL_TIM_PWM_Start_DMA(&htim2, TIM_CHANNEL_3, dados, 74);
 
-	FRESULT res = f_mount(&meuFATFS, SDPath, 1);
+	// Mount filesystem
+	FRESULT mount_res = f_mount(&meuFATFS, SDPath, 1);
+	if (mount_res != FR_OK) {
+		printf("Falha ao montar Logical driver do Cartao sd\r\n");
+		Error_Handler();
+	}
+
+	// Initialize buffer mapping – uncomment and set needed IDs
+	// Example mappings (adjust as needed):
+	// can_id_to_index[259] = 0;   // variable 1
+	// can_id_to_index[260] = 1;   // variable 2
+	// can_id_to_index[261] = 2;   // variable 3
+	// ... add other mappings up to 99 entries ...
+
+	// Open (or create) log file in append mode
+	FRESULT open_res = f_open(&meuArquivo, "Arquivo.txt",
+	FA_OPEN_APPEND | FA_WRITE);
+	if (open_res == FR_OK) {
+		// If file is empty, write header
+		if (f_size(&meuArquivo) == 0) {
+			const char *header =
+					"TIMESTAMP,GYROSCOPE,ACCELEROMETER,YAW_INPUT,RESERVED,RESERVED,RESERVED,RESERVED,STATUS_AIR + GLV + SHUNT,TOTAL_VOLTAGE_STACK1-3,TOTAL_VOLTAGE_STACK4-6,ACCUMULATOR INFORMATION,TIMESTAMP_GNSS,LATITUDE,LONGITUDE,GENERAL_GNSS,DRIVER_INPUTS,REF_TORQUE,WHEEL_SPEED,WHEEL_ACCEL,LEFT_MOTOR_TRACTIVE,LEFT_MOTOR_CURRENT,LEFT_MOTOR_ENERGY_TEMP,LEFT_MOTOR_COMMUNICATION,LEFT_MOTOR_STATE,RIGHT_MOTOR_TRACTIVE,RIGHT_MOTOR_CURRENT,RIGHT_MOTOR_ENERGY_TEMP,RIGHT_MOTOR_COMMUNICATION,RIGHT_MOTOR_STATE,RESERVED,RESERVED,RESERVED,RESERVED,STACK_VOLTAGE_1,STACK_VOLTAGE_2,STACK_VOLTAGE_3,STACK_VOLTAGE_4,STACK_VOLTAGE_5,STACK_VOLTAGE_6,STACK_TEMPERATURE_1,STACK_TEMPERATURE_2,STACK_TEMPERATURE_3,STACK_TEMPERATURE_4,STACK_TEMPERATURE_5,STACK_TEMPERATURE_6,BMS_ERROR_LOG_1,BMS_ERROR_LOG_2,ERROR_SUM_SLAVE_1,ERROR_SUM_SLAVE_2,BMS MODE,ERROR_MODE_STACK_VOLTAGE_1,ERROR_MODE_STACK_VOLTAGE_2,ERROR_MODE_STACK_VOLTAGE_3,ERROR_MODE_STACK_VOLTAGE_4,ERROR_MODE_STACK_VOLTAGE_5,ERROR_MODE_STACK_VOLTAGE_6,ERROR_MODE_STACK_TEMPERATURE_1,ERROR_MODE_STACK_TEMPERATURE_2,ERROR_MODE_STACK_TEMPERATURE_3,ERROR_MODE_STACK_TEMPERATURE_4,ERROR_MODE_STACK_TEMPERATURE_5,ERROR_MODE_STACK_TEMPERATURE_6,ADDR VOLT MIN,ADDR VOLT MAX,ADDR MAX TEMP,DESIRED YAW,ECU_MODE,TORQUE_GAIN,CONTROL_EVENTS,HODOMETER,SET_POINT,SLIP_RATE,NTC1-3,NTC4-6,NTC7-9,MLX1,MLX2,ELETROBUILD_TEMPERATURE\r\n";
+			UINT bw;
+			f_write(&meuArquivo, header, strlen(header), &bw);
+		}
+	} else {
+		printf("Falha ao abrir/criar arquivo log\r\n");
+		Error_Handler();
+	}
+
+	// Timestamp baseline for logging interval
 	uint32_t timestamp_base = __HAL_TIM_GET_COUNTER(&htim3);
+	// Initialize CAN buffer status
 	memset(callbk_can_buff, 0, sizeof(callbk_can_buff));
 	memset(can_id_to_index, -1, sizeof(can_id_to_index));
 
-	can_id_to_index[259] = 1;   // variável 1
-	can_id_to_index[260] = 2;   // variável 2
-	can_id_to_index[3] = 3;   // variável 3
-	can_id_to_index[321] = 8;   // variável 4
-	can_id_to_index[312] = 9;   // variável 4
-	can_id_to_index[317] = 11;   // variável 4
-	can_id_to_index[264] = 12;   // variável 4
-	can_id_to_index[262] = 13;   // variável 4
-	can_id_to_index[263] = 14;   // variável 4
-	can_id_to_index[265] = 15;   // variável 4
-	can_id_to_index[76] = 16;   // variável 4
-	can_id_to_index[79] = 17;   // variável 4
-	can_id_to_index[80] = 18;   // variável 4
-	can_id_to_index[81] = 19;   // variável 4
-	can_id_to_index[88] = 20;   // variável 4
-	can_id_to_index[228] = 21;   // variável 4
-	can_id_to_index[89] = 22;   // variável 4
-	can_id_to_index[90] = 23;   // variável 4
-	can_id_to_index[91] = 24;   // variável 4
-	can_id_to_index[95] = 25;   // variável 4
-	can_id_to_index[242] = 26;   // variável 4
-	can_id_to_index[96] = 27;   // variável 4
-	can_id_to_index[97] = 28;   // variável 4
-	can_id_to_index[98] = 29;   // variável 4
-	can_id_to_index[300] = 34;
-	can_id_to_index[301] = 35;
-	can_id_to_index[302] = 36;
-	can_id_to_index[303] = 37;
-	can_id_to_index[304] = 38;
-	can_id_to_index[305] = 39;
-	can_id_to_index[306] = 40;
-	can_id_to_index[307] = 41;
-	can_id_to_index[308] = 42;
-	can_id_to_index[309] = 43;
-	can_id_to_index[310] = 44;
-	can_id_to_index[311] = 45;
-	can_id_to_index[314] = 45;
-	can_id_to_index[315] = 45;
-	can_id_to_index[316] = 45;
-	can_id_to_index[318] = 46;
-	can_id_to_index[319] = 47;
-	can_id_to_index[322] = 48;
-	can_id_to_index[323] = 49;
-	can_id_to_index[324] = 50;
-	can_id_to_index[325] = 51;
-	can_id_to_index[326] = 52;
-	can_id_to_index[327] = 53;
-	can_id_to_index[328] = 54;
-	can_id_to_index[329] = 55;
-	can_id_to_index[330] = 56;
-	can_id_to_index[331] = 57;
-	can_id_to_index[332] = 58;
-	can_id_to_index[333] = 59;
-	can_id_to_index[334] = 60;
-	can_id_to_index[335] = 61;
-	can_id_to_index[336] = 62;
+	printf("Arquivo existente\r\n");
 
-	int16_t index = -1;
+	blink_rgb();
 
-	const char *header = "TIMESTAMP,"
-			"GYROSCOPE,"
-			"ACCELEROMETER,"
-			"YAW_INPUT,"
-			"RESERVED,"
-			"RESERVED,"
-			"RESERVED,"
-			"RESERVED,"
-			"STATUS_AIR + GLV + SHUNT,"
-			"TOTAL_VOLTAGE_STACK1-3,"
-			"TOTAL_VOLTAGE_STACK4-6,"
-			"ACCUMULATOR INFORMATION,"
-			"TIMESTAMP_GNSS,"
-			"LATITUDE,"
-			"LONGITUDE,"
-			"GENERAL_GNSS,"
-			"DRIVER_INPUTS,"
-			"REF_TORQUE,"
-			"WHEEL_SPEED,"
-			"WHEEL_ACCEL,"
-			"LEFT_MOTOR_TRACTIVE,"
-			"LEFT_MOTOR_CURRENT,"
-			"LEFT_MOTOR_ENERGY_TEMP,"
-			"LEFT_MOTOR_COMMUNICATION,"
-			"LEFT_MOTOR_STATE,"
-			"RIGHT_MOTOR_TRACTIVE,"
-			"RIGHT_MOTOR_CURRENT,"
-			"RIGHT_MOTOR_ENERGY_TEMP,"
-			"RIGHT_MOTOR_COMMUNICATION,"
-			"RIGHT_MOTOR_STATE,"
-			"RESERVED,"
-			"RESERVED,"
-			"RESERVED,"
-			"RESERVED,"
-			"STACK_VOLTAGE_1,"
-			"STACK_VOLTAGE_2,"
-			"STACK_VOLTAGE_3,"
-			"STACK_VOLTAGE_4,"
-			"STACK_VOLTAGE_5,"
-			"STACK_VOLTAGE_6,"
-			"STACK_TEMPERATURE_1,"
-			"STACK_TEMPERATURE_2,"
-			"STACK_TEMPERATURE_3,"
-			"STACK_TEMPERATURE_4,"
-			"STACK_TEMPERATURE_5,"
-			"STACK_TEMPERATURE_6,"
-			"BMS_ERROR_LOG_1,"
-			"BMS_ERROR_LOG_2,"
-			"ERROR_SUM_SLAVE_1,"
-			"ERROR_SUM_SLAVE_2,"
-			"BMS MODE,"
-			"ERROR_MODE_STACK_VOLTAGE_1,"
-			"ERROR_MODE_STACK_VOLTAGE_2,"
-			"ERROR_MODE_STACK_VOLTAGE_3,"
-			"ERROR_MODE_STACK_VOLTAGE_4,"
-			"ERROR_MODE_STACK_VOLTAGE_5,"
-			"ERROR_MODE_STACK_VOLTAGE_6,"
-			"ERROR_MODE_STACK_TEMPERATURE_1,"
-			"ERROR_MODE_STACK_TEMPERATURE_2,"
-			"ERROR_MODE_STACK_TEMPERATURE_3,"
-			"ERROR_MODE_STACK_TEMPERATURE_4,"
-			"ERROR_MODE_STACK_TEMPERATURE_5,"
-			"ERROR_MODE_STACK_TEMPERATURE_6,"
-			"ADDR VOLT MIN,"
-			"ADDR VOLT MAX,"
-			"ADDR MAX TEMP,"
-			"DESIRED YAW,"
-			"ECU_MODE,"
-			"TORQUE_GAIN,"
-			"CONTROL_EVENTS,"
-			"HODOMETER,"
-			"SET_POINT,"
-			"SLIP_RATE,"
-			"NTC1-3,"
-			"NTC4-6,"
-			"NTC7-9,"
-			"MLX1,"
-			"MLX2,"
-			"ELETROBUILD_TEMPERATURE\r\n";
-
-	res = f_open(&meuArquivo, "Arquivo.txt", FA_READ);
-
-	if (res == FR_NO_FILE) {
-		// Arquivo não existe
-		res = f_open(&meuArquivo, "Arquivo.txt",
-		FA_WRITE | FA_CREATE_NEW);
-
-		if (res == FR_OK) {
-			UINT bw;
-
-			f_write(&meuArquivo, header, strlen(header), &bw);
-
-			f_close(&meuArquivo);
-
-			printf("Arquivo criado\r\n");
-		}
-	} else if (res == FR_OK) {
-		// Arquivo já existe
-		f_close(&meuArquivo);
-
-		printf("Arquivo existente\r\n");
-	}
-
+	FRESULT write_res;
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 	while (1) {
-		if (HAL_FDCAN_GetRxMessage(&hfdcan2,
-		FDCAN_RX_FIFO0, &RxHeader, RxData) == HAL_OK) {
-			HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+		static uint32_t last_uart_heartbeat = 0;
+
+		if (HAL_GetTick() - last_uart_heartbeat >= 100) {
+			last_uart_heartbeat = HAL_GetTick();
+			printf("tick %lu\r\n", HAL_GetTick());
 		}
 
-		index = -1;
+		char *ptr = csv_line;
 
-		if (RxHeader.Identifier <= MAX_CAN_ID) {
-			index = can_id_to_index[RxHeader.Identifier];
+		ptr += sprintf(ptr, "%lu", HAL_GetTick());
+
+		for (int i = 0; i < 82; i++) {
+			// Use 64-bit format specifier for CAN data payload
+			ptr += sprintf(ptr, ",%llu",
+					(unsigned long long) callbk_can_buff[i].data);
 		}
 
-		if (index >= 0) {
-			memcpy(&callbk_can_buff[index].data, RxData, sizeof(uint64_t));
-			callbk_can_buff[index].id = RxHeader.Identifier;
+		ptr += sprintf(ptr, "\r\n");
+
+		// Write CSV line to SD card
+		write_res = f_write(&meuArquivo, csv_line, strlen(csv_line),
+				&testeByte);
+		if (write_res != FR_OK) {
+			printf("SD write error: %d\r\n", write_res);
+		} else {
+			printf("escrita realizada!\r\n");
+			// Ensure data is flushed to card periodically
+			f_sync(&meuArquivo);
 		}
-
-		timestamp_us = __HAL_TIM_GET_COUNTER(&htim3);
-
-		if (timestamp_us - timestamp_base >= 50000) {
-			timestamp_base = timestamp_us;
-			if (res == FR_OK) {
-				res = f_open(&meuArquivo, "Arquivo.txt",
-				FA_OPEN_APPEND | FA_WRITE);
-				char *ptr = csv_line;
-
-				ptr += sprintf(ptr, "%lu", HAL_GetTick());
-
-				for (int i = 0; i < 82; i++) {
-					ptr += sprintf(ptr, ",%u", callbk_can_buff[i].data);
-				}
-
-				ptr += sprintf(ptr, "\r\n");
-
-				f_write(&meuArquivo, csv_line, strlen(csv_line), &testeByte);
-
-				res = f_close(&meuArquivo);
+		// Do NOT close the file each iteration; keep it open for continuous logging
 
 //				res = f_mount(NULL, SDPath, 1);
-			} else {
-				printf("Falha ao montar Logical driver do Cartão sd \r\n");
-			}
-		}
+//			} else {
+//				printf("Falha ao montar Logical driver do Cartao sd \r\n");
+//			}
+//		}
 
 		/* USER CODE END WHILE */
 
@@ -645,8 +514,6 @@ static void MX_SDMMC2_SD_Init(void) {
 
 	/* USER CODE BEGIN SDMMC2_Init 0 */
 
-	uint8_t init_fail = 0;
-
 	/* USER CODE END SDMMC2_Init 0 */
 
 	/* USER CODE BEGIN SDMMC2_Init 1 */
@@ -658,18 +525,11 @@ static void MX_SDMMC2_SD_Init(void) {
 	hsd2.Init.BusWide = SDMMC_BUS_WIDE_1B;
 	hsd2.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE;
 	hsd2.Init.ClockDiv = 64;
-	if (HAL_SD_Init(&hsd2) != HAL_OK) {
-		init_fail = 1;
-	}
 	/* USER CODE BEGIN SDMMC2_Init 2 */
 
 	uint8_t sd_ok = 0;
 
 	for (int tentativas = 0; tentativas < 10; tentativas++) {
-		HAL_SD_DeInit(&hsd2);
-
-		HAL_Delay(100);
-
 		if (HAL_SD_Init(&hsd2) == HAL_OK) {
 			sd_ok = 1;
 			printf("SD inicializado na tentativa %d\r\n", tentativas + 1);
@@ -679,12 +539,14 @@ static void MX_SDMMC2_SD_Init(void) {
 		printf("Falha SD tentativa %d, erro=0x%08lx\r\n", tentativas + 1,
 				hsd2.ErrorCode);
 
+		HAL_SD_DeInit(&hsd2);
 		HAL_Delay(500);
 	}
 
 	if (!sd_ok) {
 		printf("Nao foi possivel inicializar SD\r\n");
 
+		Error_Handler();
 		NVIC_SystemReset();
 	}
 
@@ -767,7 +629,7 @@ static void MX_TIM3_Init(void) {
 	htim3.Instance = TIM3;
 	htim3.Init.Prescaler = 63;
 	htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim3.Init.Period = 60000;
+	htim3.Init.Period = 50000;
 	htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
 	htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 	if (HAL_TIM_Base_Init(&htim3) != HAL_OK) {

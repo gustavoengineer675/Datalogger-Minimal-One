@@ -211,14 +211,14 @@ void HAL_SD_MspInit(SD_HandleTypeDef* hsd)
 
     GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_4;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF9_SDIO2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
     GPIO_InitStruct.Pin = GPIO_PIN_7;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF11_SDIO2;
     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
@@ -297,7 +297,7 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* htim_base)
     hdma_tim2_ch3.Init.MemInc = DMA_MINC_ENABLE;
     hdma_tim2_ch3.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
     hdma_tim2_ch3.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
-    hdma_tim2_ch3.Init.Mode = DMA_CIRCULAR;
+    hdma_tim2_ch3.Init.Mode = DMA_NORMAL;
     hdma_tim2_ch3.Init.Priority = DMA_PRIORITY_LOW;
     hdma_tim2_ch3.Init.FIFOMode = DMA_FIFOMODE_ENABLE;
     hdma_tim2_ch3.Init.FIFOThreshold = DMA_FIFO_THRESHOLD_FULL;
